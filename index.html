@@ -467,6 +467,7 @@ function gameView(){
     <div class="stats"><span>Songs <b>${game.steps.length}${s.maxSongs ? '/' + s.maxSongs : ''}</b></span><span>Zeit <b id="clock">${fmtTime(Date.now() - game.startedAt)}</b></span>${claims ? `<span>Unbelegt <b>${claims}</b></span>` : ''}</div>
   </div>
   ${chainHtml(game, true)}
+  ${game.steps.length ? '<button class="btn ghost block" id="btnLinksGame">Linkliste der bisherigen Songs</button>' : ''}
   <div class="panel">
     <span class="eyebrow">Nächster Song</span>
     <p class="muted small">Er muss einen dieser Künstler enthalten${s.bandLinks ? ' oder mit ihm über eine Band verbunden sein' : ''}:</p>
@@ -517,6 +518,7 @@ function resultsHtml(){
 function bindGame(){
   $('#btnHome').onclick = () => { view = 'home'; render(); };
   $('#btnUndo').onclick = undo;
+  if($('#btnLinksGame')) $('#btnLinksGame').onclick = () => openLinkList(game, { finished:false });
   bindChips();
   let deb;
   $('#q').oninput = e => { search.q = e.target.value; clearTimeout(deb); deb = setTimeout(() => runSearch(true), 600); };
@@ -588,6 +590,33 @@ function openNoLinkSheet(rec){
   }
 }
 
+/* ---------- Linkliste ---------- */
+function spotifyUrl(rec){ return 'https://open.spotify.com/search/' + encodeURIComponent(rec.title + ' ' + (rec.artists[0] ? rec.artists[0].name : '')); }
+function linkListText(g, opts = {}){
+  const head = `🎸 ${g.ch.start.name} → ${g.ch.target.name} (${g.steps.length} Song${g.steps.length === 1 ? '' : 's'}${opts.finished ? '' : ', noch unterwegs'})`;
+  const lines = [head, ''];
+  g.steps.forEach((st, i) => {
+    lines.push(`${i + 1}. ${st.rec.title} – ${st.rec.credit}`);
+    lines.push(spotifyUrl(st.rec));
+  });
+  if(opts.code) lines.push('', 'Prüfen: ' + BASE + '#k=' + opts.code);
+  return lines.join('\n');
+}
+function openLinkList(g, opts = {}){
+  if(!g.steps.length){ toast('Noch keine Songs in der Liste'); return; }
+  const text = linkListText(g, opts);
+  sheet(`<h2>Linkliste</h2>
+    <p class="muted small">Jeder Link öffnet den Song in Spotify. Teilen schickt die ganze Liste, z. B. in eure WhatsApp-Gruppe.</p>
+    <div class="list">${g.steps.map((st, i) => `<a class="item" href="${spotifyUrl(st.rec)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">
+      <span class="num">${i + 1}</span><div class="txt"><div class="t1">${esc(st.rec.title)}</div><div class="t2">${esc(st.rec.credit)}</div></div><span class="tag">▶ Spotify</span></a>`).join('')}</div>
+    <label class="check small"><input type="checkbox" id="llCode" ${opts.code ? 'checked' : ''} ${opts.code ? '' : 'disabled'}> Prüf-Link anhängen</label>
+    <div class="row"><button class="btn ghost" id="llCopy">Kopieren</button><button class="btn primary" id="llShare">Teilen</button></div>
+    <button class="btn ghost" data-close>Schließen</button>`);
+  const current = () => linkListText(g, { ...opts, code: $('#llCode').checked ? opts.code : null });
+  $('#llCopy').onclick = () => copyText(current());
+  $('#llShare').onclick = () => shareText(current());
+}
+
 /* ---------- Ergebnis ---------- */
 function resultView(){
   const claims = game.steps.filter(x => x.link.type === 'claim').length;
@@ -602,11 +631,13 @@ function resultView(){
   ${chainHtml(game, false)}
   <div class="panel">
     <button class="btn primary block" id="btnShare">Ergebnis mit Prüf-Link teilen</button>
+    <button class="btn block" id="btnLinks">Linkliste erstellen</button>
     <div class="row"><button class="btn ghost" id="btnUndo2">Letzten Song zurück</button><button class="btn ghost" id="btnNew">Neue Challenge</button></div>
   </div>`;
 }
 function bindResult(){
   $('#btnShare').onclick = () => shareText(resultText());
+  $('#btnLinks').onclick = () => openLinkList(game, { finished:true, code:chainCode(game) });
   $('#btnUndo2').onclick = undo;
   $('#btnNew').onclick = () => { game = null; LS.del('game'); draft = { start:null, target:null }; view = 'home'; render(); };
 }
@@ -667,10 +698,12 @@ function verifyView(){
   <div class="verdict ${cls}">${esc(verdict)}</div>
   ${chainHtml(g, false)}
   ${!v.reached ? endpointNode(g.ch.target, 'Ziel nicht erreicht', false) : ''}
-  <button class="btn block" id="btnPlaySame">Diese Challenge selbst spielen</button>`;
+  <button class="btn block" id="btnVerifyLinks">Linkliste erstellen</button>
+  <button class="btn ghost block" id="btnPlaySame">Diese Challenge selbst spielen</button>`;
 }
 function bindVerify(){
   $('#btnHome').onclick = () => { view = 'home'; verify = null; render(); };
+  if($('#btnVerifyLinks')) $('#btnVerifyLinks').onclick = () => openLinkList(verify.g, { finished:!!verify.reached, code:verify.code });
   if($('#btnPlaySame')) $('#btnPlaySame').onclick = () => { const g = verify.g; verify = null; newGame(artistPick(g.ch.start), artistPick(g.ch.target)); };
 }
 
