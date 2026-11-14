@@ -1,0 +1,764 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Band-Kette">
+<meta name="theme-color" content="#15121F">
+<title>Band-Kette</title>
+<link rel="apple-touch-icon" id="touchIcon" href="">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap">
+<style>
+/* Layout: eine Spalte wie eine Setlist; Songs als Karten, dazwischen Verbindungslinien mit dem Beleg */
+:root{
+  --bg:#15121F; --surface:#1F1B2D; --surface2:#2A2540; --line:#3A3456;
+  --fg:#F4EFE6; --muted:#A79FBD; --accent:#FF6B3D; --accent-ink:#1A0E08;
+  --ok:#5ED3A5; --band:#93A9FF; --claim:#F2C14E; --bad:#FF5C7A;
+  --f-display:"Bricolage Grotesque","Arial Black",system-ui,sans-serif;
+  --f-body:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --f-mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+  --r:14px; color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 var(--f-body);-webkit-text-size-adjust:100%}
+body{padding-top:env(safe-area-inset-top,0px);padding-bottom:calc(24px + env(safe-area-inset-bottom,0px));padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));min-height:100vh}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);background:var(--bg);z-index:10}
+[hidden]{display:none!important}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+a{color:var(--band)}
+.wrap{max-width:560px;margin:0 auto;display:flex;flex-direction:column;gap:18px;padding-top:14px}
+h1,h2,h3{font-family:var(--f-display);margin:0;text-wrap:balance;letter-spacing:-.01em}
+h1{font-size:30px;font-weight:800;line-height:1.05}
+h2{font-size:20px;font-weight:800}
+h3{font-size:16px;font-weight:600}
+p{margin:0}
+.eyebrow{font:500 11px/1 var(--f-mono);text-transform:uppercase;letter-spacing:.12em;color:var(--muted)}
+.muted{color:var(--muted)} .small{font-size:13px}
+.top{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.logo{display:flex;align-items:center;gap:10px}
+.iconbtn{background:var(--surface);border:1px solid var(--line);border-radius:12px;width:40px;height:40px;display:grid;place-items:center;flex:none}
+.iconbtn:disabled{opacity:.4}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:16px;display:flex;flex-direction:column;gap:12px}
+.btn{border:0;border-radius:12px;padding:13px 16px;font-weight:600;background:var(--surface2);display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:46px;text-decoration:none;color:var(--fg)}
+.btn.primary{background:var(--accent);color:var(--accent-ink)}
+.btn.ghost{background:transparent;border:1px solid var(--line)}
+.btn.block{width:100%}
+.btn:disabled{opacity:.45;cursor:default}
+.row{display:flex;gap:10px;flex-wrap:wrap}
+.row>.btn{flex:1 1 140px}
+input[type=text],input[type=search]{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:12px 14px;min-height:46px}
+input::placeholder{color:var(--muted)}
+label{display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--muted)}
+.toggle{flex-direction:row;justify-content:space-between;align-items:center;color:var(--fg);font-size:14px;gap:12px}
+.toggle small{display:block;color:var(--muted);font-size:12px}
+.toggle input,.check input{width:22px;height:22px;accent-color:var(--accent);flex:none}
+.check{flex-direction:row;align-items:center;gap:10px;color:var(--fg);font-size:14px}
+
+.vs{display:grid;grid-template-columns:1fr auto 1fr;gap:8px;align-items:stretch}
+.pick{background:var(--bg);border:1px dashed var(--line);border-radius:12px;padding:12px;text-align:left;display:flex;flex-direction:column;gap:6px;min-height:92px;min-width:0}
+.pick.set{border-style:solid;border-color:var(--accent)}
+.pick b{font-family:var(--f-display);font-size:16px;overflow-wrap:anywhere}
+.arrow{align-self:center;font:600 18px var(--f-mono);color:var(--accent)}
+
+.list{display:flex;flex-direction:column}
+.item{display:flex;align-items:center;gap:12px;padding:11px 4px;border:0;border-bottom:1px solid var(--line);background:none;text-align:left;width:100%}
+.item:last-child{border-bottom:0}
+.item .txt{min-width:0;flex:1}
+.item .t1{font-weight:600;overflow-wrap:anywhere}
+.item .t2{font-size:13px;color:var(--muted);overflow-wrap:anywhere}
+.item .t2 mark{background:none;color:var(--ok);font-weight:600}
+.tag{font:500 11px/1 var(--f-mono);padding:5px 7px;border-radius:6px;background:var(--surface2);color:var(--muted);flex:none;white-space:nowrap}
+.tag.ok{background:color-mix(in srgb,var(--ok) 18%,transparent);color:var(--ok)}
+.tag.win{background:var(--accent);color:var(--accent-ink)}
+.tag.bad{background:color-mix(in srgb,var(--bad) 18%,transparent);color:var(--bad)}
+.tag.claim{background:color-mix(in srgb,var(--claim) 18%,transparent);color:var(--claim)}
+
+.gamehead{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--bg);padding:10px 0;display:flex;flex-direction:column;gap:10px;border-bottom:1px solid var(--line)}
+.route{display:flex;align-items:center;gap:8px;min-width:0;flex:1}
+.route b{font-family:var(--f-display);font-size:17px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.stats{display:flex;gap:14px;font:500 12px var(--f-mono);color:var(--muted);font-variant-numeric:tabular-nums;flex-wrap:wrap}
+.stats b{color:var(--fg)}
+
+.chain{display:flex;flex-direction:column}
+.node{display:flex;align-items:center;gap:12px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+.node.endpoint{background:transparent;border-style:dashed}
+.node.endpoint.reached{border-style:solid;border-color:var(--accent)}
+.node .txt{min-width:0;flex:1}
+.node .t1{font-weight:600;overflow-wrap:anywhere}
+.node .t2{font-size:13px;color:var(--muted);overflow-wrap:anywhere}
+.num{font:500 12px var(--f-mono);color:var(--muted);min-width:22px;text-align:center;flex:none}
+.play{font:500 11px var(--f-mono);color:var(--muted);text-decoration:none;border:1px solid var(--line);border-radius:8px;padding:6px 8px;flex:none}
+.link{display:flex;align-items:stretch;gap:12px;padding-left:20px;min-height:34px}
+.link .bar{width:3px;border-radius:2px;background:var(--ok);flex:none}
+.link.band .bar{background:var(--band)}
+.link.claim .bar{background:repeating-linear-gradient(var(--claim) 0 6px,transparent 6px 10px)}
+.link.bad .bar{background:var(--bad)}
+.link .lbl{font:500 12px/1.4 var(--f-mono);color:var(--ok);padding:7px 0;min-width:0;overflow-wrap:anywhere}
+.link.band .lbl{color:var(--band)} .link.claim .lbl{color:var(--claim)} .link.bad .lbl{color:var(--bad)}
+.link .lbl a{color:inherit}
+
+.chips{display:flex;gap:8px;flex-wrap:wrap}
+.chip{border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:7px 12px;font-size:13px}
+.chip.on{background:var(--ok);border-color:var(--ok);color:#0B1F17;font-weight:600}
+.chip.hint{border-style:dashed;color:var(--band)}
+.chip.hint.on{background:var(--band);border-color:var(--band);color:#0E1430}
+
+.sheet{position:fixed;inset:0;background:rgba(8,6,14,.7);z-index:20;display:flex;align-items:flex-end;justify-content:center}
+.sheet>.card{background:var(--surface);border-radius:20px 20px 0 0;width:100%;max-width:560px;max-height:88vh;overflow:auto;padding:18px max(16px,env(safe-area-inset-right,0px)) calc(18px + env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px));display:flex;flex-direction:column;gap:12px}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(20px + env(safe-area-inset-bottom,0px));background:var(--fg);color:var(--bg);padding:10px 16px;border-radius:12px;font-weight:600;z-index:30;max-width:calc(100% - 32px);text-align:center}
+.busy{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:13px}
+.spin{width:16px;height:16px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;flex:none}
+@keyframes spin{to{transform:rotate(360deg)}}
+.shake{animation:shake .35s}
+@keyframes shake{25%{transform:translateX(-6px)}75%{transform:translateX(6px)}}
+.hero{text-align:center;display:flex;flex-direction:column;gap:6px;padding:10px 0}
+.big{font:800 54px/1 var(--f-display);color:var(--accent);font-variant-numeric:tabular-nums}
+.verdict{border-radius:12px;padding:12px 14px;font-weight:600}
+.verdict.ok{background:color-mix(in srgb,var(--ok) 15%,transparent);color:var(--ok)}
+.verdict.claim{background:color-mix(in srgb,var(--claim) 15%,transparent);color:var(--claim)}
+.verdict.bad{background:color-mix(in srgb,var(--bad) 15%,transparent);color:var(--bad)}
+@media (prefers-reduced-motion:reduce){.shake,.spin{animation:none}}
+</style>
+</head>
+<body>
+<div class="wrap" id="app"></div>
+<div id="sheetRoot"></div>
+
+<script>
+/* ============ Grundlagen ============ */
+const $ = s => document.querySelector(s);
+const $$ = s => document.querySelectorAll(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const LS = {
+  get(k, d){ try{ const v = localStorage.getItem('bk2_'+k); return v == null ? d : JSON.parse(v); }catch(e){ return d; } },
+  set(k, v){ try{ localStorage.setItem('bk2_'+k, JSON.stringify(v)); }catch(e){} },
+  del(k){ try{ localStorage.removeItem('bk2_'+k); }catch(e){} }
+};
+const BASE = location.href.split('#')[0];
+function toast(msg){ const el = document.createElement('div'); el.className = 'toast'; el.textContent = msg; document.body.appendChild(el); setTimeout(() => el.remove(), 3000); }
+function settings(){ return Object.assign({ maxSongs:0, bandLinks:true, colleagues:false, claims:true, hints:false }, LS.get('settings', {})); }
+
+const PRESETS = [
+  {s:['Seiler und Speer','AT'], t:['Deichkind','DE'], tag:'Männerwochenende'},
+  {s:['Helene Fischer','DE'], t:['The Pretty Reckless','US'], tag:'Männerwochenende'},
+  {s:['Volbeat','DK'], t:['Red Hot Chili Peppers','US'], tag:'Männerwochenende'},
+  {s:['Pur','DE'], t:['Gorillaz','GB'], tag:'Männerwochenende'},
+  {s:['Andreas Gabalier','AT'], t:['Metallica','US']},
+  {s:['Die Toten Hosen','DE'], t:['Daft Punk','FR']},
+  {s:['Rammstein','DE'], t:['Taylor Swift','US']},
+  {s:['Peter Fox','DE'], t:['Foo Fighters','US']},
+];
+const POOL = [['AC/DC','AU'],['Linkin Park','US'],['Beyoncé','US'],['Peter Maffay','DE'],['Cro','DE'],['Queen','GB'],['Rihanna',''],['Sido','DE'],
+  ['Coldplay','GB'],['Eminem','US'],['Udo Lindenberg','DE'],['Kraftklub','DE'],['Adele','GB'],['Snoop Dogg','US'],['Muse','GB'],['Nena','DE'],
+  ['Bon Jovi','US'],['Ed Sheeran','GB'],['Herbert Grönemeyer','DE'],['Shakira','CO'],['Wanda','AT'],['Green Day','US'],['Nickelback','CA'],
+  ['Beatsteaks','DE'],['Scooter','DE'],['Tokio Hotel','DE'],['The Weeknd','CA'],['Santiano','DE'],['Sportfreunde Stiller','DE'],
+  ['Mark Forster','DE'],['Billie Eilish','US'],['Iron Maiden','GB'],['David Guetta','FR'],['Die Ärzte','DE'],['Slash','US'],['Nirvana','US']];
+
+/* ============ MusicBrainz-Zugriff (max. 1 Anfrage pro Sekunde) ============ */
+const MB = 'https://musicbrainz.org/ws/2/';
+const queue = []; let pumping = false, lastCall = 0;
+function mb(path, prio = 'low', kind = ''){
+  return new Promise((res, rej) => {
+    const job = { path, res, rej, kind };
+    if(kind === 'search'){ for(let i = queue.length - 1; i >= 0; i--) if(queue[i].kind === 'search'){ queue[i].rej(Object.assign(new Error('veraltet'), {stale:true})); queue.splice(i, 1); } }
+    if(prio === 'high') queue.unshift(job); else queue.push(job);
+    pump();
+  });
+}
+async function pump(){
+  if(pumping) return; pumping = true;
+  while(queue.length){
+    const job = queue.shift();
+    const wait = lastCall + 1100 - Date.now(); if(wait > 0) await sleep(wait);
+    lastCall = Date.now();
+    try{ job.res(await mbFetch(job.path)); }catch(e){ job.rej(e); }
+  }
+  pumping = false;
+}
+async function mbFetch(path, tries = 0){
+  let r;
+  try{ r = await fetch(MB + path + (path.includes('?') ? '&' : '?') + 'fmt=json', { headers:{ Accept:'application/json' } }); }
+  catch(e){ throw new Error('Keine Verbindung zu MusicBrainz. Bist du online?'); }
+  if((r.status === 503 || r.status === 429) && tries < 3){ await sleep(1500 * (tries + 1)); return mbFetch(path, tries + 1); }
+  if(r.status === 404) throw Object.assign(new Error('Eintrag in MusicBrainz nicht gefunden'), {status:404});
+  if(!r.ok) throw new Error('MusicBrainz antwortet mit Fehler ' + r.status);
+  return r.json();
+}
+const luc = s => s.replace(/([+\-!(){}\[\]^"~*?:\\\/]|&&|\|\|)/g, '\\$1');
+function handleErr(e){ if(e && e.stale) return; console.error(e); toast(e.message || 'Unbekannter Fehler'); }
+
+const TYPE_DE = { Group:'Band', Person:'Person', Orchestra:'Orchester', Choir:'Chor', Character:'Figur' };
+function artistPick(a){ return { id:a.id, name:a.name, type:a.type || '', country:a.country || '', dis:a.disambiguation || '' }; }
+function artistMeta(a){ return [TYPE_DE[a.type] || a.type, a.country, a.dis].filter(Boolean).join(' · '); }
+
+async function searchArtists(q){
+  const r = await mb('artist?limit=15&query=' + encodeURIComponent(luc(q)), 'high', 'search');
+  return (r.artists || []).map(artistPick);
+}
+async function findArtist(name, country){
+  const exact = l => l.find(a => a.name.toLowerCase() === name.toLowerCase());
+  if(country){
+    const r = await mb('artist?limit=10&query=' + encodeURIComponent(`artist:"${luc(name)}" AND country:${country}`), 'high');
+    const hit = exact((r.artists || []).map(artistPick)); if(hit) return hit;
+  }
+  const r2 = await mb('artist?limit=10&query=' + encodeURIComponent(`artist:"${luc(name)}"`), 'high');
+  const l2 = (r2.artists || []).map(artistPick);
+  return exact(l2) || l2[0] || null;
+}
+function recPick(r){
+  const ac = r['artist-credit'] || [];
+  return { id:r.id, title:r.title,
+    artists:ac.filter(c => c.artist).map(c => ({ id:c.artist.id, name:c.artist.name })),
+    credit:ac.map(c => (c.name || (c.artist && c.artist.name) || '') + (c.joinphrase || '')).join(''),
+    year:(r['first-release-date'] || '').slice(0, 4), video:!!r.video };
+}
+async function searchRecordings(query, offset){
+  const r = await mb(`recording?limit=100&offset=${offset}&query=` + encodeURIComponent(query), 'high', 'search');
+  return { items:(r.recordings || []).map(recPick), total:r.count || 0 };
+}
+async function getRecording(id){ return recPick(await mb('recording/' + id + '?inc=artist-credits', 'high')); }
+
+/* Beziehungen: Mitglied, Kollaboration (Duo-Projekte), Künstlername derselben Person */
+const LINK_TYPES = { 'member of band':1, 'collaboration':1, 'is person':1 };
+const relCache = new Map();
+function artistInfo(id, prio = 'low'){
+  if(relCache.has(id)) return relCache.get(id);
+  const p = mb('artist/' + id + '?inc=artist-rels', prio).then(a => ({
+    ...artistPick(a),
+    rels:(a.relations || []).filter(r => LINK_TYPES[r.type] && r.artist).map(r => ({
+      type:r.type, dir:r.direction, artist:{ id:r.artist.id, name:r.artist.name },
+      begin:(r.begin || '').slice(0, 4), end:(r.end || '').slice(0, 4), ended:!!r.ended }))
+  }));
+  relCache.set(id, p); p.catch(() => relCache.delete(id));
+  return p;
+}
+function years(r){ return r.begin ? ` (${r.begin}–${r.ended ? (r.end || '?') : 'heute'})` : ''; }
+function relText(q, r){
+  const was = r.ended ? 'war' : 'ist';
+  if(r.type === 'member of band') return r.dir === 'forward' ? `${q.name} ${was} Mitglied von ${r.artist.name}${years(r)}` : `${r.artist.name} ${was} Mitglied von ${q.name}${years(r)}`;
+  if(r.type === 'collaboration') return r.dir === 'forward' ? `${q.name} gehört zu ${r.artist.name}` : `${r.artist.name} gehört zu ${q.name}`;
+  return `${q.name} und ${r.artist.name} sind dieselbe Person`;
+}
+
+/* Kernprüfung: findet die stärkste belegbare Verbindung zwischen zwei Credit-Listen */
+async function findLink(prev, next, opts, prio = 'high'){
+  const shared = next.filter(a => prev.some(p => p.id === a.id));
+  if(shared.length) return { type:'feat', via:shared.map(a => ({id:a.id, name:a.name})) };
+  if(!opts.bandLinks) return null;
+  const nextIds = new Set(next.map(a => a.id));
+  const prevInfos = await Promise.all(prev.map(p => artistInfo(p.id, prio)));
+  for(const info of prevInfos){
+    for(const r of info.rels){
+      if(nextIds.has(r.artist.id)) return { type:'band', a:{id:info.id, name:info.name}, b:r.artist, text:relText(info, r) };
+    }
+  }
+  if(opts.colleagues){
+    const nextInfos = await Promise.all(next.map(n => artistInfo(n.id, prio)));
+    for(const pi of prevInfos){
+      const pBands = pi.rels.filter(r => r.type === 'member of band' && r.dir === 'forward');
+      for(const ni of nextInfos){
+        for(const r of ni.rels){
+          if(r.type !== 'member of band' || r.dir !== 'forward') continue;
+          const hit = pBands.find(b => b.artist.id === r.artist.id);
+          if(hit) return { type:'colleague', a:{id:pi.id, name:pi.name}, b:{id:ni.id, name:ni.name}, band:r.artist,
+            text:`${pi.name} und ${ni.name} spielten beide bei ${r.artist.name}` };
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/* ============ Spielzustand ============ */
+let view = 'home';
+let game = LS.get('game', null);
+let draft = { start:null, target:null };
+let search = { q:'', chip:null, offset:0, items:[], total:0, loading:false, collabOnly:false, seq:0 };
+let verify = null;
+let timerId = null, adding = false;
+
+function anchors(){
+  if(!game) return [];
+  return game.steps.length ? game.steps[game.steps.length - 1].rec.artists : [game.ch.start];
+}
+function isWin(rec){ return rec.artists.some(a => a.id === game.ch.target.id); }
+function fmtTime(ms){ const s = Math.max(0, Math.floor(ms / 1000)); return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0'); }
+function prefetchAnchors(){ if(settings().bandLinks) anchors().forEach(a => artistInfo(a.id).catch(() => {})); }
+
+function newGame(start, target){
+  game = { ch:{ start, target }, steps:[], startedAt:Date.now(), finishedAt:null, won:false };
+  LS.set('game', game); view = 'game';
+  search = { q:'', chip:start, offset:0, items:[], total:0, loading:false, collabOnly:false, seq:0 };
+  render(); runSearch(true); prefetchAnchors();
+}
+function addStep(rec, link){
+  game.steps.push({ rec, link });
+  if(isWin(rec)){ game.won = true; game.finishedAt = Date.now(); saveHistory(); view = 'result'; }
+  LS.set('game', game);
+  if(!game.won){ search.chip = rec.artists[0] || null; search.q = ''; render(); runSearch(true); prefetchAnchors(); }
+  else render();
+}
+async function tryAdd(rec, rowEl){
+  if(adding) return;
+  const s = settings();
+  if(s.maxSongs && game.steps.length >= s.maxSongs){ toast(`Limit von ${s.maxSongs} Songs erreicht. Nimm einen Schritt zurück.`); return; }
+  if(game.steps.some(st => st.rec.id === rec.id)){ toast('Der Song ist schon in deiner Kette'); return; }
+  adding = true;
+  const busy = $('#addBusy'); if(busy){ busy.hidden = false; busy.querySelector('span:last-child').textContent = 'Prüfe Verbindung in MusicBrainz …'; }
+  try{
+    const link = await findLink(anchors(), rec.artists, s);
+    if(link){ addStep(rec, link); return; }
+    if(rowEl){ rowEl.classList.remove('shake'); void rowEl.offsetWidth; rowEl.classList.add('shake'); }
+    openNoLinkSheet(rec);
+  }catch(e){ handleErr(e); }
+  finally{ adding = false; const b = $('#addBusy'); if(b) b.hidden = true; }
+}
+function undo(){
+  if(!game || !game.steps.length) return;
+  game.steps.pop(); game.won = false; game.finishedAt = null; LS.set('game', game);
+  view = 'game'; search.chip = anchors()[0] || null; search.q = '';
+  render(); runSearch(true);
+}
+function saveHistory(){
+  const h = LS.get('history', []);
+  h.unshift({ s:game.ch.start.name, t:game.ch.target.name, n:game.steps.length,
+    claims:game.steps.filter(x => x.link.type === 'claim').length, ms:game.finishedAt - game.startedAt, at:game.finishedAt, code:chainCode(game) });
+  LS.set('history', h.slice(0, 30));
+}
+
+/* Prüf-Code: Start, Ziel und alle Aufnahmen als MusicBrainz-IDs; ! markiert unbelegte Glieder */
+function chainCode(g){ return [g.ch.start.id, g.ch.target.id, ...g.steps.map(s => s.rec.id + (s.link.type === 'claim' ? '!' : ''))].join('.'); }
+const MBID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/* ============ Rendering ============ */
+const LOGO = `<svg width="34" height="34" viewBox="0 0 34 34" aria-hidden="true"><rect width="34" height="34" rx="9" fill="#FF6B3D"/><circle cx="10" cy="11" r="4" fill="#15121F"/><circle cx="24" cy="23" r="4" fill="#15121F"/><path d="M12.5 13.5 21.5 20.5" stroke="#15121F" stroke-width="3" stroke-linecap="round"/></svg>`;
+const GEAR = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>`;
+
+function render(){
+  clearInterval(timerId);
+  const app = $('#app');
+  if(view === 'verify' && verify){ app.innerHTML = verifyView(); bindVerify(); return; }
+  if(view === 'game' && game && !game.won){ app.innerHTML = gameView(); bindGame(); timerId = setInterval(tick, 1000); return; }
+  if(view === 'result' && game && game.won){ app.innerHTML = resultView(); bindResult(); return; }
+  view = 'home'; app.innerHTML = homeView(); bindHome();
+}
+
+function pickBox(which, a){
+  return `<button class="pick ${a ? 'set' : ''}" data-pick="${which}">
+    <span class="eyebrow">${which === 'start' ? 'Startband' : 'Zielband'}</span>
+    ${a ? `<b>${esc(a.name)}</b><span class="muted small">${esc(artistMeta(a))}</span>` : `<span class="muted">Antippen zum Suchen</span>`}</button>`;
+}
+function homeView(){
+  const h = LS.get('history', []);
+  const running = game && !game.won;
+  return `
+  <div class="top"><div class="logo">${LOGO}<h1>Band-Kette</h1></div>
+    <button class="iconbtn" id="btnSettings" aria-label="Spielregeln und Einstellungen">${GEAR}</button></div>
+  <p class="muted">Von der Startband zur Zielband, Song für Song. Jede Verbindung wird gegen die offene Musikdatenbank MusicBrainz geprüft: gemeinsame Künstler auf einem Song oder belegte Bandmitgliedschaften.</p>
+  ${running ? `<div class="panel"><span class="eyebrow">Laufende Challenge</span>
+    <h3>${esc(game.ch.start.name)} → ${esc(game.ch.target.name)}</h3>
+    <span class="muted small">${game.steps.length} Songs bisher</span>
+    <div class="row"><button class="btn primary" id="btnResume">Weiterspielen</button><button class="btn ghost" id="btnAbort">Abbrechen</button></div></div>` : ''}
+  <div class="panel">
+    <span class="eyebrow">Neue Challenge</span>
+    <div class="vs">${pickBox('start', draft.start)}<span class="arrow">→</span>${pickBox('target', draft.target)}</div>
+    <div class="row">
+      <button class="btn ghost" id="btnRandom">Zufällige Bands</button>
+      <button class="btn primary" id="btnStart" ${draft.start && draft.target ? '' : 'disabled'}>Los geht’s</button>
+    </div>
+    <button class="btn ghost block" id="btnShareCh" ${draft.start && draft.target ? '' : 'disabled'}>Challenge an die Gruppe schicken</button>
+  </div>
+  <div class="panel">
+    <span class="eyebrow">Vorschläge</span>
+    <div class="list">${PRESETS.map((p, i) => `<button class="item" data-preset="${i}">
+      <div class="txt"><div class="t1">${esc(p.s[0])} → ${esc(p.t[0])}</div>${p.tag ? `<div class="t2">${esc(p.tag)}</div>` : ''}</div>
+      <span class="tag">Spielen</span></button>`).join('')}</div>
+  </div>
+  <div class="panel">
+    <span class="eyebrow">Kette eines Mitspielers prüfen</span>
+    <p class="muted small">Prüf-Link aus WhatsApp hier einfügen. Die App lädt jeden Song neu aus MusicBrainz und kontrolliert jede Verbindung.</p>
+    <input type="text" id="verifyIn" placeholder="Prüf-Link einfügen" autocomplete="off" autocapitalize="off" spellcheck="false">
+    <button class="btn block" id="btnVerify">Kette prüfen</button>
+  </div>
+  ${h.length ? `<div class="panel"><span class="eyebrow">Deine Ergebnisse</span><div class="list">${h.slice(0, 10).map((x, i) => `
+    <button class="item" data-hist="${i}"><div class="txt"><div class="t1">${esc(x.s)} → ${esc(x.t)}</div>
+    <div class="t2">${new Date(x.at).toLocaleDateString('de-DE')} · ${fmtTime(x.ms)}${x.claims ? ' · ' + x.claims + ' unbelegt' : ''}</div></div>
+    <span class="tag ok">${x.n} Songs</span></button>`).join('')}</div></div>` : ''}`;
+}
+function bindHome(){
+  $$('[data-pick]').forEach(b => b.onclick = () => openArtistSheet(b.dataset.pick));
+  $$('[data-preset]').forEach(b => b.onclick = () => startPreset(PRESETS[+b.dataset.preset], b));
+  $$('[data-hist]').forEach(b => b.onclick = () => { const x = LS.get('history', [])[+b.dataset.hist]; if(x && x.code) startVerify(x.code); });
+  $('#btnRandom').onclick = randomChallenge;
+  $('#btnStart').onclick = () => newGame(draft.start, draft.target);
+  $('#btnShareCh').onclick = () => shareChallenge(draft.start, draft.target);
+  $('#btnSettings').onclick = openSettings;
+  $('#btnVerify').onclick = () => {
+    const v = $('#verifyIn').value.trim(); const m = v.match(/#k=([^\s]+)/);
+    startVerify(m ? m[1] : v);
+  };
+  if($('#btnResume')) $('#btnResume').onclick = () => { view = 'game'; search.chip = anchors()[0] || null; render(); runSearch(true); prefetchAnchors(); };
+  if($('#btnAbort')) $('#btnAbort').onclick = () => { game = null; LS.del('game'); render(); };
+}
+async function startPreset(p, btn){
+  const tag = btn.querySelector('.tag'); tag.textContent = 'Suche …';
+  try{
+    const a = await findArtist(p.s[0], p.s[1]); const b = await findArtist(p.t[0], p.t[1]);
+    if(!a || !b){ toast('Band nicht in MusicBrainz gefunden'); tag.textContent = 'Spielen'; return; }
+    newGame(a, b);
+  }catch(e){ handleErr(e); tag.textContent = 'Spielen'; }
+}
+async function randomChallenge(){
+  const btn = $('#btnRandom'); btn.disabled = true; btn.textContent = 'Suche …';
+  const i = Math.floor(Math.random() * POOL.length); let j; do { j = Math.floor(Math.random() * POOL.length); } while(j === i);
+  try{
+    const a = await findArtist(...POOL[i]); const b = await findArtist(...POOL[j]);
+    draft.start = a; draft.target = b;
+  }catch(e){ handleErr(e); }
+  render();
+}
+
+/* ---------- Kette zeichnen ---------- */
+function linkHtml(link, status){
+  let cls = 'feat', txt = '';
+  if(link.type === 'start' || link.type === 'feat') txt = 'gemeinsam: ' + link.via.map(a => esc(a.name)).join(', ');
+  else if(link.type === 'band'){ cls = 'band'; txt = `<a href="https://musicbrainz.org/artist/${esc(link.a.id)}/relationships" target="_blank" rel="noopener">${esc(link.text)}</a>`; }
+  else if(link.type === 'colleague'){ cls = 'band'; txt = `<a href="https://musicbrainz.org/artist/${esc(link.band.id)}/relationships" target="_blank" rel="noopener">${esc(link.text)}</a>`; }
+  else if(link.type === 'claim'){ cls = 'claim'; txt = 'nicht in MusicBrainz belegt, von der Gruppe bestätigt'; }
+  else if(link.type === 'bad'){ cls = 'bad'; txt = esc(link.text); }
+  return `<div class="link ${cls}"><span class="bar"></span><span class="lbl">${txt}</span></div>`;
+}
+function songNode(rec, i){
+  const sp = 'https://open.spotify.com/search/' + encodeURIComponent(rec.title + ' ' + (rec.artists[0] ? rec.artists[0].name : ''));
+  return `<div class="node"><span class="num">${i + 1}</span>
+    <div class="txt"><div class="t1"><a href="https://musicbrainz.org/recording/${esc(rec.id)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">${esc(rec.title)}</a></div>
+    <div class="t2">${esc(rec.credit)}${rec.year ? ' · ' + esc(rec.year) : ''}</div></div>
+    <a class="play" href="${sp}" target="_blank" rel="noopener" aria-label="In Spotify suchen">▶ Spotify</a></div>`;
+}
+function endpointNode(a, label, reached){
+  return `<div class="node endpoint ${reached ? 'reached' : ''}"><span class="num">${label === 'Start' ? '●' : '◎'}</span>
+    <div class="txt"><div class="eyebrow">${label}</div><div class="t1">${esc(a.name)}</div><div class="t2">${esc(artistMeta(a))}</div></div></div>`;
+}
+function chainHtml(g, withTarget){
+  let html = endpointNode(g.ch.start, 'Start', true);
+  g.steps.forEach((st, i) => { html += linkHtml(st.link) + songNode(st.rec, i); });
+  if(withTarget) html += `<div class="link"><span class="bar" style="background:var(--line)"></span><span class="lbl muted">…</span></div>` + endpointNode(g.ch.target, 'Ziel', false);
+  return `<div class="chain">${html}</div>`;
+}
+
+/* ---------- Spielansicht ---------- */
+function gameView(){
+  const s = settings(); const a = anchors();
+  const claims = game.steps.filter(x => x.link.type === 'claim').length;
+  return `
+  <div class="gamehead">
+    <div class="top">
+      <button class="iconbtn" id="btnHome" aria-label="Zur Übersicht"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M15 18l-6-6 6-6"/></svg></button>
+      <div class="route"><b>${esc(game.ch.start.name)}</b><span class="arrow">→</span><b>${esc(game.ch.target.name)}</b></div>
+      <button class="iconbtn" id="btnUndo" aria-label="Letzten Song entfernen" ${game.steps.length ? '' : 'disabled'}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/></svg></button>
+    </div>
+    <div class="stats"><span>Songs <b>${game.steps.length}${s.maxSongs ? '/' + s.maxSongs : ''}</b></span><span>Zeit <b id="clock">${fmtTime(Date.now() - game.startedAt)}</b></span>${claims ? `<span>Unbelegt <b>${claims}</b></span>` : ''}</div>
+  </div>
+  ${chainHtml(game, true)}
+  <div class="panel">
+    <span class="eyebrow">Nächster Song</span>
+    <p class="muted small">Er muss einen dieser Künstler enthalten${s.bandLinks ? ' oder mit ihm über eine Band verbunden sein' : ''}:</p>
+    <div class="chips" id="chips">${chipsHtml()}</div>
+    <input type="search" id="q" placeholder="${search.chip ? 'Titel oder weiteren Künstler eingrenzen' : 'Songtitel oder Künstler'}" value="${esc(search.q)}" enterkeyhint="search" autocomplete="off">
+    <label class="check small"><input type="checkbox" id="collab" ${search.collabOnly ? 'checked' : ''}> Nur Songs mit mehreren Künstlern</label>
+    <div class="busy" id="addBusy" hidden><span class="spin"></span><span></span></div>
+    <div class="list" id="results">${resultsHtml()}</div>
+    <button class="btn ghost block" id="btnMore" ${moreVisible() ? '' : 'hidden'}>Mehr laden</button>
+  </div>`;
+}
+function chipsHtml(){
+  const a = anchors();
+  let html = a.map(x => `<button class="chip ${search.chip && search.chip.id === x.id ? 'on' : ''}" data-chip="${esc(x.id)}" data-name="${esc(x.name)}">${esc(x.name)}</button>`).join('');
+  if(settings().hints && hintList.length) html += hintList.map(x => `<button class="chip hint ${search.chip && search.chip.id === x.id ? 'on' : ''}" data-chip="${esc(x.id)}" data-name="${esc(x.name)}">↔ ${esc(x.name)}</button>`).join('');
+  return html;
+}
+let hintList = [];
+async function loadHints(){
+  hintList = [];
+  if(!settings().hints || !settings().bandLinks || !game) return;
+  const ids = anchors().map(a => a.id);
+  try{
+    const infos = await Promise.all(ids.map(id => artistInfo(id, 'high')));
+    const seen = new Set(ids);
+    infos.forEach(i => i.rels.forEach(r => { if(!seen.has(r.artist.id)){ seen.add(r.artist.id); hintList.push(r.artist); } }));
+    const c = $('#chips'); if(c){ c.innerHTML = chipsHtml(); bindChips(); }
+  }catch(e){ handleErr(e); }
+}
+function visibleItems(){ return search.collabOnly ? search.items.filter(r => r.artists.length > 1) : search.items; }
+function moreVisible(){ return search.items.length > 0 && search.offset < search.total; }
+function resultsHtml(){
+  const items = visibleItems();
+  if(search.loading && !items.length) return '<div class="busy"><span class="spin"></span><span>Suche in MusicBrainz …</span></div>';
+  if(!search.chip && !search.q.trim()) return '<p class="muted small">Tippe oben einen Künstler an oder suche nach einem Songtitel.</p>';
+  if(!items.length) return '<p class="muted small">Keine Songs gefunden. Versuch einen anderen Titel oder Künstler.</p>';
+  const prev = anchors().map(a => a.id);
+  return items.map(r => {
+    const ok = r.artists.some(a => prev.includes(a.id));
+    const win = r.artists.some(a => a.id === game.ch.target.id);
+    let credit = esc(r.credit);
+    r.artists.forEach(a => { if(prev.includes(a.id)) credit = credit.replace(esc(a.name), `<mark>${esc(a.name)}</mark>`); });
+    return `<button class="item" data-res="${esc(r.id)}">
+      <div class="txt"><div class="t1">${esc(r.title)}</div><div class="t2">${credit}${r.year ? ' · ' + esc(r.year) : ''}</div></div>
+      ${win && ok ? '<span class="tag win">Ziel!</span>' : win ? '<span class="tag win">Zielband</span>' : ok ? '<span class="tag ok">gemeinsam</span>' : ''}</button>`;
+  }).join('');
+}
+function bindGame(){
+  $('#btnHome').onclick = () => { view = 'home'; render(); };
+  $('#btnUndo').onclick = undo;
+  bindChips();
+  let deb;
+  $('#q').oninput = e => { search.q = e.target.value; clearTimeout(deb); deb = setTimeout(() => runSearch(true), 600); };
+  $('#q').onkeydown = e => { if(e.key === 'Enter'){ e.target.blur(); clearTimeout(deb); runSearch(true); } };
+  $('#collab').onchange = e => { search.collabOnly = e.target.checked; updateResults(); };
+  $('#btnMore').onclick = () => runSearch(false);
+  bindResults();
+  if(settings().hints) loadHints();
+}
+function bindChips(){
+  $$('[data-chip]').forEach(b => b.onclick = () => {
+    search.chip = search.chip && search.chip.id === b.dataset.chip ? null : { id:b.dataset.chip, name:b.dataset.name };
+    $('#chips').innerHTML = chipsHtml(); bindChips();
+    $('#q').placeholder = search.chip ? 'Titel oder weiteren Künstler eingrenzen' : 'Songtitel oder Künstler';
+    runSearch(true);
+  });
+}
+function bindResults(){
+  $$('[data-res]').forEach(b => b.onclick = () => { const r = search.items.find(x => x.id === b.dataset.res); if(r) tryAdd(r, b); });
+}
+function recQuery(){
+  const parts = [];
+  if(search.chip) parts.push('arid:' + search.chip.id);
+  const t = search.q.trim();
+  if(t){ const e = luc(t); parts.push(`(recording:(${e}) OR artist:(${e}))`); }
+  return parts.join(' AND ');
+}
+async function runSearch(reset){
+  const query = recQuery();
+  if(reset){ search.offset = 0; search.items = []; search.total = 0; }
+  if(!query){ updateResults(); return; }
+  const seq = ++search.seq;
+  search.loading = true; updateResults();
+  try{
+    const { items, total } = await searchRecordings(query, search.offset);
+    if(seq !== search.seq) return;
+    const key = r => r.title.toLowerCase().replace(/\s*[\(\[].*?(live|remaster|version|edit|mix|demo|acoustic).*?[\)\]]/gi, '').trim() + '|' + r.artists.map(a => a.id).sort().join(',');
+    const seen = new Set(search.items.map(key));
+    const fresh = items.filter(r => !r.video && !seen.has(key(r)) && (seen.add(key(r)), true));
+    if(search.chip && !search.q.trim()) fresh.sort((a, b) => b.artists.length - a.artists.length);
+    search.items = search.items.concat(fresh); search.total = total; search.offset += 100;
+  }catch(e){ handleErr(e); }
+  if(seq === search.seq){ search.loading = false; updateResults(); }
+}
+function updateResults(){
+  const r = $('#results'); if(!r) return;
+  r.innerHTML = resultsHtml(); bindResults();
+  const m = $('#btnMore'); if(m) m.hidden = !moreVisible();
+}
+function tick(){ const c = $('#clock'); if(c && game) c.textContent = fmtTime(Date.now() - game.startedAt); }
+
+/* ---------- Keine Verbindung gefunden ---------- */
+function openNoLinkSheet(rec){
+  const s = settings(); const prev = anchors();
+  const artistLinks = [...prev, ...rec.artists].filter((a, i, l) => l.findIndex(x => x.id === a.id) === i)
+    .map(a => `<a href="https://musicbrainz.org/artist/${esc(a.id)}/relationships" target="_blank" rel="noopener">${esc(a.name)}</a>`).join(' · ');
+  sheet(`
+    <h2>Keine Verbindung gefunden</h2>
+    <p class="muted small">„${esc(rec.title)}“ (${esc(rec.credit)}) teilt sich laut MusicBrainz keinen Künstler mit dem vorherigen Song${s.bandLinks ? ', und es ist keine Bandmitgliedschaft eingetragen' : ''}.</p>
+    <p class="small">Selbst nachschauen: ${artistLinks}</p>
+    ${s.claims ? `
+      <p class="muted small">Ihr wisst es besser? Dann könnt ihr das Glied als „unbelegt“ setzen. Es wird in der Kette gelb markiert und bei der Prüfung extra ausgewiesen.</p>
+      <label class="check"><input type="checkbox" id="clOk"> Die Gruppe bestätigt diese Verbindung</label>
+      <div class="row"><button class="btn ghost" data-close>Anderen Song wählen</button><button class="btn primary" id="clSave" disabled>Unbelegt setzen</button></div>`
+    : `<button class="btn primary" data-close>Anderen Song wählen</button>`}`);
+  if(s.claims){
+    $('#clOk').onchange = e => $('#clSave').disabled = !e.target.checked;
+    $('#clSave').onclick = () => { closeSheet(); addStep(rec, { type:'claim' }); };
+  }
+}
+
+/* ---------- Ergebnis ---------- */
+function resultView(){
+  const claims = game.steps.filter(x => x.link.type === 'claim').length;
+  return `
+  <div class="hero">
+    <span class="eyebrow">Aufgabe erfüllt</span>
+    <h1>${esc(game.ch.start.name)} → ${esc(game.ch.target.name)}</h1>
+    <div class="big">${game.steps.length}</div>
+    <span class="muted">Songs · ${fmtTime(game.finishedAt - game.startedAt)}</span>
+  </div>
+  <div class="verdict ${claims ? 'claim' : 'ok'}">${claims ? `${claims} von ${game.steps.length} Gliedern sind nicht in MusicBrainz belegt` : 'Alle Glieder sind in MusicBrainz belegt'}</div>
+  ${chainHtml(game, false)}
+  <div class="panel">
+    <button class="btn primary block" id="btnShare">Ergebnis mit Prüf-Link teilen</button>
+    <div class="row"><button class="btn ghost" id="btnUndo2">Letzten Song zurück</button><button class="btn ghost" id="btnNew">Neue Challenge</button></div>
+  </div>`;
+}
+function bindResult(){
+  $('#btnShare').onclick = () => shareText(resultText());
+  $('#btnUndo2').onclick = undo;
+  $('#btnNew').onclick = () => { game = null; LS.del('game'); draft = { start:null, target:null }; view = 'home'; render(); };
+}
+function linkPlain(l){
+  if(l.type === 'band' || l.type === 'colleague') return '↳ ' + l.text;
+  if(l.type === 'claim') return '↳ unbelegt (Gruppe)';
+  return '';
+}
+function resultText(){
+  const lines = [`🎸 Aufgabe erfüllt: ${game.ch.start.name} → ${game.ch.target.name}`, `${game.steps.length} Songs in ${fmtTime(game.finishedAt - game.startedAt)}`, ''];
+  game.steps.forEach((st, i) => { const lp = linkPlain(st.link); if(lp) lines.push('   ' + lp); lines.push(`${i + 1}. ${st.rec.title} – ${st.rec.credit}`); });
+  lines.push('', 'Prüfen: ' + BASE + '#k=' + chainCode(game));
+  return lines.join('\n');
+}
+
+/* ---------- Prüfansicht ---------- */
+async function startVerify(code){
+  const parts = (code || '').split('.');
+  const ids = parts.map(p => p.replace(/!$/, ''));
+  if(parts.length < 3 || !ids.every(id => MBID.test(id))){ toast('Das ist kein gültiger Prüf-Link'); return; }
+  verify = { code, total:parts.length, done:0, status:'loading', g:null, problems:0, claims:0 };
+  view = 'verify'; render();
+  try{
+    const s = { ...settings(), bandLinks:true };
+    const startInfo = await artistInfo(ids[0], 'high'); verify.done++; updateVerifyProgress();
+    const targetInfo = await artistInfo(ids[1], 'high'); verify.done++; updateVerifyProgress();
+    const g = { ch:{ start:startInfo, target:targetInfo }, steps:[] };
+    let prev = [startInfo];
+    for(let i = 2; i < parts.length; i++){
+      const rec = await getRecording(ids[i]); verify.done++; updateVerifyProgress();
+      let link = await findLink(prev, rec.artists, s);
+      if(!link){
+        if(parts[i].endsWith('!')){ link = { type:'claim' }; verify.claims++; }
+        else { link = { type:'bad', text:'keine Verbindung in MusicBrainz' }; verify.problems++; }
+      }
+      g.steps.push({ rec, link }); prev = rec.artists;
+    }
+    const last = g.steps[g.steps.length - 1];
+    verify.reached = !!last && last.rec.artists.some(a => a.id === targetInfo.id);
+    if(!verify.reached) verify.problems++;
+    verify.g = g; verify.status = 'done';
+  }catch(e){ verify.status = 'error'; verify.error = e.message; }
+  render();
+}
+function updateVerifyProgress(){ const el = $('#vprog'); if(el) el.textContent = `${verify.done} von ${verify.total} Einträgen geladen`; }
+function verifyView(){
+  const v = verify;
+  const back = `<div class="top"><button class="iconbtn" id="btnHome" aria-label="Zur Übersicht"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M15 18l-6-6 6-6"/></svg></button><h2 style="flex:1">Kette prüfen</h2></div>`;
+  if(v.status === 'loading') return back + `<div class="panel"><div class="busy"><span class="spin"></span><span id="vprog">${v.done} von ${v.total} Einträgen geladen</span></div><p class="muted small">MusicBrainz erlaubt etwa eine Anfrage pro Sekunde, das dauert also einen Moment.</p></div>`;
+  if(v.status === 'error') return back + `<div class="verdict bad">Prüfung fehlgeschlagen: ${esc(v.error)}</div>`;
+  const g = v.g;
+  let verdict, cls;
+  if(v.problems){ cls = 'bad'; verdict = (v.reached ? '' : 'Die Kette endet nicht bei der Zielband. ') + (v.problems - (v.reached ? 0 : 1) ? `${v.problems - (v.reached ? 0 : 1)} Glied(er) ohne Verbindung.` : ''); }
+  else if(v.claims){ cls = 'claim'; verdict = `Gültig, aber ${v.claims} Glied(er) nur von der Gruppe bestätigt.`; }
+  else { cls = 'ok'; verdict = 'Gültig. Jedes Glied ist in MusicBrainz belegt.'; }
+  return back + `
+  <div class="hero"><h1>${esc(g.ch.start.name)} → ${esc(g.ch.target.name)}</h1><div class="big">${g.steps.length}</div><span class="muted">Songs</span></div>
+  <div class="verdict ${cls}">${esc(verdict)}</div>
+  ${chainHtml(g, false)}
+  ${!v.reached ? endpointNode(g.ch.target, 'Ziel nicht erreicht', false) : ''}
+  <button class="btn block" id="btnPlaySame">Diese Challenge selbst spielen</button>`;
+}
+function bindVerify(){
+  $('#btnHome').onclick = () => { view = 'home'; verify = null; render(); };
+  if($('#btnPlaySame')) $('#btnPlaySame').onclick = () => { const g = verify.g; verify = null; newGame(artistPick(g.ch.start), artistPick(g.ch.target)); };
+}
+
+/* ---------- Teilen ---------- */
+async function copyText(t){
+  try{ await navigator.clipboard.writeText(t); toast('Kopiert'); }
+  catch(e){ const ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta); ta.select(); try{ document.execCommand('copy'); toast('Kopiert'); }catch(_){ toast('Kopieren nicht möglich'); } ta.remove(); }
+}
+async function shareText(t){
+  if(navigator.share){ try{ await navigator.share({ text:t }); return; }catch(e){ if(e.name === 'AbortError') return; } }
+  copyText(t);
+}
+function shareChallenge(a, b){
+  shareText(`Neue Band-Kette: ${a.name} → ${b.name}\nWer schafft es mit den wenigsten Songs?\n${BASE}#c=${a.id}.${b.id}`);
+}
+async function readHash(){
+  const h = location.hash;
+  const k = h.match(/^#k=(.+)$/), c = h.match(/^#c=([0-9a-f-]{36})\.([0-9a-f-]{36})$/);
+  if(k || c) history.replaceState(null, '', BASE);
+  if(k){ startVerify(decodeURIComponent(k[1])); return true; }
+  if(c){
+    toast('Challenge wird geladen …');
+    try{ const a = await artistInfo(c[1], 'high'); const b = await artistInfo(c[2], 'high'); draft.start = artistPick(a); draft.target = artistPick(b); render(); }
+    catch(e){ handleErr(e); }
+  }
+  return false;
+}
+
+/* ---------- Sheets ---------- */
+function sheet(inner){
+  $('#sheetRoot').innerHTML = `<div class="sheet" id="sheet"><div class="card" role="dialog" aria-modal="true">${inner}</div></div>`;
+  $('#sheet').onclick = e => { if(e.target.id === 'sheet' || e.target.hasAttribute('data-close')) closeSheet(); };
+}
+function closeSheet(){ $('#sheetRoot').innerHTML = ''; }
+
+function openArtistSheet(which){
+  sheet(`<h2>${which === 'start' ? 'Startband' : 'Zielband'} wählen</h2>
+    <input type="search" id="aq" placeholder="Band oder Künstler" enterkeyhint="search" autocomplete="off">
+    <div class="list" id="ares"><p class="muted small">Achte auf Land und Beschreibung, es gibt viele gleichnamige Bands.</p></div>
+    <button class="btn ghost" data-close>Schließen</button>`);
+  const inp = $('#aq'); setTimeout(() => inp.focus(), 50);
+  let deb, list = [];
+  inp.oninput = () => { clearTimeout(deb); deb = setTimeout(async () => {
+    const q = inp.value.trim(); if(!q) return;
+    $('#ares').innerHTML = '<div class="busy"><span class="spin"></span><span>Suche …</span></div>';
+    try{
+      list = await searchArtists(q);
+      $('#ares').innerHTML = list.map((a, i) => `<button class="item" data-a="${i}"><div class="txt"><div class="t1">${esc(a.name)}</div><div class="t2">${esc(artistMeta(a)) || '&nbsp;'}</div></div></button>`).join('') || '<p class="muted small">Nichts gefunden</p>';
+      $$('[data-a]').forEach(b => b.onclick = () => { draft[which] = list[+b.dataset.a]; closeSheet(); render(); });
+    }catch(e){ handleErr(e); }
+  }, 600); };
+}
+function openSettings(){
+  const s = settings();
+  sheet(`<h2>Spielregeln</h2>
+    <label class="toggle"><span>Band-Links erlauben<small>Ein Künstler ist oder war Mitglied der anderen Band, laut MusicBrainz.</small></span><input type="checkbox" id="sBand" ${s.bandLinks ? 'checked' : ''}></label>
+    <label class="toggle"><span>Bandkollegen zählen<small>Zwei Künstler spielten in derselben Band, z. B. zwei Ex-Mitglieder.</small></span><input type="checkbox" id="sCol" ${s.colleagues ? 'checked' : ''}></label>
+    <label class="toggle"><span>Unbelegte Glieder erlauben<small>Die Gruppe darf fehlende Einträge bestätigen. Sie werden markiert.</small></span><input type="checkbox" id="sClaim" ${s.claims ? 'checked' : ''}></label>
+    <label class="toggle"><span>Tipps anzeigen<small>Blendet verbundene Bands als zusätzliche Suchfilter ein.</small></span><input type="checkbox" id="sHint" ${s.hints ? 'checked' : ''}></label>
+    <label>Maximale Anzahl Songs (0 = unbegrenzt)<input type="text" inputmode="numeric" id="sMax" value="${s.maxSongs}"></label>
+    <div class="row"><button class="btn ghost" data-close>Abbrechen</button><button class="btn primary" id="sSave">Speichern</button></div>
+    <p class="muted small">Daten: MusicBrainz, die offene Musikdatenbank. Fehlt eine Verbindung, kann sie dort jeder nachtragen.</p>`);
+  $('#sSave').onclick = () => {
+    LS.set('settings', { maxSongs:Math.max(0, parseInt($('#sMax').value, 10) || 0), bandLinks:$('#sBand').checked,
+      colleagues:$('#sCol').checked, claims:$('#sClaim').checked, hints:$('#sHint').checked });
+    closeSheet(); toast('Gespeichert'); render();
+  };
+}
+
+/* ---------- Homescreen-Symbol ---------- */
+function makeIcon(){
+  try{
+    const c = document.createElement('canvas'); c.width = c.height = 180; const x = c.getContext('2d');
+    x.fillStyle = '#FF6B3D'; x.fillRect(0, 0, 180, 180);
+    x.fillStyle = '#15121F'; x.beginPath(); x.arc(56, 60, 22, 0, 7); x.fill(); x.beginPath(); x.arc(124, 120, 22, 0, 7); x.fill();
+    x.strokeStyle = '#15121F'; x.lineWidth = 16; x.lineCap = 'round'; x.beginPath(); x.moveTo(70, 74); x.lineTo(110, 106); x.stroke();
+    $('#touchIcon').href = c.toDataURL('image/png');
+  }catch(e){}
+}
+
+/* ---------- Start ---------- */
+(async function init(){
+  makeIcon();
+  if(game && !game.won){ view = 'game'; search.chip = anchors()[0] || null; }
+  const verifying = await readHash();
+  if(!verifying){ render(); if(view === 'game'){ runSearch(true); prefetchAnchors(); } }
+  window.addEventListener('hashchange', readHash);
+})();
+</script>
+</body>
+</html>
