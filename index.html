@@ -1348,26 +1348,84 @@ function jsonp(url){
   return new Promise((res, rej) => {
     const cb = '__bkcb' + (++jsonpN), s = document.createElement('script');
     const done = () => { delete window[cb]; s.remove(); clearTimeout(to); };
-    const to = setTimeout(() => { done(); rej(new Error('Apple Music antwortet nicht')); }, 9000);
+    const to = setTimeout(() => { done(); rej(new Error('keine Antwort')); }, 9000);
     window[cb] = j => { done(); res(j); };
-    s.onerror = () => { done(); rej(new Error('Apple Music nicht erreichbar')); };
+    s.onerror = () => { done(); rej(new Error('nicht erreichbar')); };
     s.src = url + (url.includes('?') ? '&' : '?') + 'callback=' + cb;
     document.head.appendChild(s);
   });
 }
-async function amFind(rec){
-  const k = recKey(rec), cache = LS.get('amMatch', {});
-  if(k in cache) return cache[k];
-  const artist = rec.artists && rec.artists[0] ? rec.artists[0].name : (rec.credit || '');
-  const term = (amNorm(rec.title) + ' ' + artist).trim();
-  const j = await jsonp('https://itunes.apple.com/search?media=music&entity=song&limit=20&country=' + amStorefront() + '&term=' + encodeURIComponent(term));
+/* Suchquellen der Reihe nach: Apple-Music-API (mit Token), öffentliche iTunes-Suche, Deezer-Hörproben als Reserve */
+function amBest(rec, list){
   let best = null, bs = 0;
-  for(const t of (j.results || [])){ const sc = amScore(rec, t); if(sc > bs){ bs = sc; best = t; } }
-  const out = best ? { id:String(best.trackId), title:best.trackName, artist:best.artistName, preview:best.previewUrl || null,
-    url:(best.trackViewUrl || '').replace(/[?&]uo=\d+/, ''), art:(best.artworkUrl100 || '').replace('100x100bb', '200x200bb'), dur:best.trackTimeMillis || 0 } : null;
+  for(const t of list){ const sc = amScore(rec, t); if(sc > bs){ bs = sc; best = t; } }
+  return best;
+}
+function amTerms(rec){
+  const artist = rec.artists && rec.artists[0] ? rec.artists[0].name : (rec.credit || '');
+  const t = amNorm(rec.title);
+  return [(t + ' ' + artist).trim(), t].filter((x, i, a) => x && a.indexOf(x) === i);
+}
+async function srcAppleApi(rec){
+  const tok = await amToken(); if(!tok) return undefined;
+  for(const term of amTerms(rec)){
+    const r = await fetch(`https://api.music.apple.com/v1/catalog/${amStorefront()}/search?types=songs&limit=20&term=` + encodeURIComponent(term), { headers:{ Authorization:'Bearer ' + tok } });
+    if(r.status === 401 || r.status === 403) throw new Error('Apple-Music-Token wird nicht akzeptiert');
+    if(!r.ok) throw new Error('Apple Music antwortet mit Fehler ' + r.status);
+    const j = await r.json();
+    const list = ((j.results && j.results.songs && j.results.songs.data) || []).map(d => ({ id:d.id, trackName:d.attributes.name, artistName:d.attributes.artistName,
+      previewUrl:d.attributes.previews && d.attributes.previews[0] ? d.attributes.previews[0].url : null, url:d.attributes.url,
+      art:d.attributes.artwork ? d.attributes.artwork.url.replace('{w}', '200').replace('{h}', '200') : '', dur:d.attributes.durationInMillis || 0 }));
+    const b = amBest(rec, list);
+    if(b) return { src:'apple', id:String(b.id), title:b.trackName, artist:b.artistName, preview:b.previewUrl, url:b.url, art:b.art, dur:b.dur };
+  }
+  return null;
+}
+async function srcItunes(rec){
+  for(const term of amTerms(rec)){
+    const j = await jsonp('https://itunes.apple.com/search?media=music&entity=song&limit=20&country=' + amStorefront() + '&term=' + encodeURIComponent(term));
+    const b = amBest(rec, j.results || []);
+    if(b) return { src:'apple', id:String(b.trackId), title:b.trackName, artist:b.artistName, preview:b.previewUrl || null,
+      url:(b.trackViewUrl || '').replace(/[?&]uo=\d+/, ''), art:(b.artworkUrl100 || '').replace('100x100bb', '200x200bb'), dur:b.trackTimeMillis || 0 };
+  }
+  return null;
+}
+async function srcDeezer(rec){
+  for(const term of amTerms(rec)){
+    const j = await jsonp('https://api.deezer.com/search?output=jsonp&limit=20&q=' + encodeURIComponent(term));
+    if(j && j.error) throw new Error('Deezer: ' + (j.error.message || 'Fehler'));
+    const list = ((j && j.data) || []).map(d => ({ id:d.id, trackName:d.title, artistName:d.artist ? d.artist.name : '', previewUrl:d.preview || null, url:d.link,
+      art:d.album ? d.album.cover_medium : '', dur:(d.duration || 0) * 1000 }));
+    const b = amBest(rec, list);
+    if(b) return { src:'deezer', id:String(b.id), title:b.trackName, artist:b.artistName, preview:b.previewUrl, url:b.url, art:b.art, dur:b.dur };
+  }
+  return null;
+}
+const AM_SOURCES = [['Apple-Music-API', srcAppleApi], ['Apple-Suche', srcItunes], ['Deezer', srcDeezer]];
+/* opts.apple: nur Apple-Treffer (für ganze Songs über MusicKit) */
+async function amFind(rec, opts = {}){
+  const k = recKey(rec) + (opts.apple ? '|a' : ''), cache = LS.get('amMatch2', {});
+  const c = cache[k];
+  if(c && (c.m || Date.now() - c.t < 6 * 3600e3)) return c.m;
+  let m = null; const errs = []; let tried = 0;
+  for(const [name, fn] of AM_SOURCES){
+    if(opts.apple && fn === srcDeezer) continue;
+    try{ const r = await fn(rec); if(r === undefined) continue; tried++; if(r){ m = r; break; } }
+    catch(e){ tried++; errs.push(name + ': ' + (e.message || 'Fehler')); }
+  }
+  if(!m && errs.length && errs.length === tried) throw new Error('Musiksuche nicht erreichbar (' + errs.join('; ') + ')');
   const keys = Object.keys(cache); if(keys.length > 800) keys.slice(0, 200).forEach(x => delete cache[x]);
-  cache[k] = out; LS.set('amMatch', cache);
-  return out;
+  cache[k] = { m, t:Date.now() }; LS.set('amMatch2', cache);
+  return m;
+}
+async function amSelfTest(){
+  const rec = { title:'Everlong', artists:[{ name:'Foo Fighters' }], credit:'Foo Fighters' };
+  const out = [];
+  for(const [name, fn] of AM_SOURCES){
+    try{ const r = await fn(rec); out.push(name + ': ' + (r === undefined ? 'kein Token' : r ? 'ok' + (r.preview ? ', Hörprobe da' : ', ohne Hörprobe') : 'nichts gefunden')); }
+    catch(e){ out.push(name + ': ' + (e.message || 'Fehler')); }
+  }
+  return out.join(' · ');
 }
 function amStorefront(){ return (settings().amStore || 'de').toLowerCase(); }
 
@@ -1445,7 +1503,7 @@ async function playList(recs, start = 0){
   pl.mode = amFull() ? 'full' : 'preview';
   if(pl.mode === 'full'){
     pl.busy = true; plDraw();
-    const matches = await Promise.all(recs.map(r => amFind(r).catch(() => null)));
+    const matches = await Promise.all(recs.map(r => amFind(r, { apple:true }).catch(() => null)));
     const ids = [], map = [];
     matches.forEach((m, i) => { if(m){ map[ids.length] = i; ids.push(m.id); } });
     pl.map = map; pl.matches = matches; pl.busy = false;
@@ -1473,11 +1531,11 @@ async function plGo(i){
   }
   const a = audioEl(); a.pause(); pl.match = null; pl.t = 0; pl.dur = 0; pl.busy = true; plDraw();
   const rec = pl.queue[i];
-  let m = null; try{ m = await amFind(rec); }catch(e){ pl.msg = e.message; }
+  let m = null, err = null; try{ m = await amFind(rec); }catch(e){ err = e.message; }
   if(pl.queue[pl.idx] !== rec) return;
   pl.busy = false; pl.match = m;
   if(!m || !m.preview || settings().amPreview === false){
-    pl.msg = !m ? 'Nicht bei Apple Music gefunden' : settings().amPreview === false ? 'Hörproben sind ausgeschaltet. Melde dich mit Apple Music an oder öffne den Song.' : 'Keine Hörprobe verfügbar';
+    pl.msg = err ? err : !m ? 'Song nicht gefunden' : settings().amPreview === false ? 'Hörproben sind ausgeschaltet. Melde dich mit Apple Music an oder öffne den Song.' : 'Keine Hörprobe verfügbar';
     pl.playing = false; plDraw(); return;
   }
   a.src = m.preview; if(canSetVolume()) a.volume = plVolume();
@@ -1545,7 +1603,7 @@ function plDraw(){
   if(!pl.queue.length){ root.hidden = true; root.innerHTML = ''; document.body.classList.remove('hasplayer'); return; }
   const r = pl.queue[pl.idx], m = pl.match;
   root.hidden = false; document.body.classList.add('hasplayer');
-  const src = pl.mode === 'full' ? 'Apple Music' : 'Hörprobe 30 s';
+  const src = pl.mode === 'full' ? 'Apple Music' : 'Hörprobe 30 s' + (m && m.src === 'deezer' ? ' · Deezer' : '');
   root.innerHTML = `
     <div class="plrow">
       ${m && m.art ? `<img class="plart" src="${esc(m.art)}" alt="">` : '<div class="plart"></div>'}
@@ -1565,7 +1623,7 @@ function plDraw(){
     </div>
     ${pl.msg ? `<p class="small plmsg">${esc(pl.msg)}</p>` : ''}
     <div class="plrow pllinks">
-      ${m && m.url ? `<a class="play" href="${esc(m.url)}" target="_blank" rel="noopener">Apple Music</a>` : ''}
+      ${m && m.url ? `<a class="play" href="${esc(m.url)}" target="_blank" rel="noopener">${m.src === 'deezer' ? 'Deezer' : 'Apple Music'}</a>` : ''}
       <a class="play" href="${spotifyUrl(r)}" target="_blank" rel="noopener">Spotify</a>
       ${pl.mode === 'preview' && !amFull() ? '<button class="linkbtn" id="plSignIn">Ganze Songs mit Apple Music</button>' : ''}
     </div>`;
@@ -2539,10 +2597,11 @@ function openSettings(){
     <label>Maximale Anzahl Songs (0 = unbegrenzt)<input type="text" inputmode="numeric" id="sMax" value="${s.maxSongs}"></label>
     <span class="eyebrow">Abspielen</span>
     <p class="muted small">Songs laufen direkt in der App. Ganze Songs gibt es mit Apple-Music-Abo und Anmeldung, sonst 30-Sekunden-Hörproben. Spotify bleibt als Link zum Öffnen in der Spotify-App.</p>
-    <label class="toggle"><span>Hörproben ohne Anmeldung<small>30 Sekunden pro Song über Apple Music.</small></span><input type="checkbox" id="sPrev" ${s.amPreview === false ? '' : 'checked'}></label>
+    <label class="toggle"><span>Hörproben ohne Anmeldung<small>30 Sekunden pro Song über Apple Music, ersatzweise Deezer.</small></span><input type="checkbox" id="sPrev" ${s.amPreview === false ? '' : 'checked'}></label>
     <label>Apple-Music-Land (zwei Buchstaben)<input type="text" id="sStore" maxlength="2" autocapitalize="off" value="${esc(s.amStore || 'de')}"></label>
     <label>Apple-Music-Entwicklertoken<textarea id="sTok" rows="2" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="eyJ…">${esc(s.amToken || '')}</textarea></label>
     <p class="small" id="amInfo"></p>
+    <button class="btn ghost" id="amTest">Musiksuche testen</button><p class="small" id="amTestOut"></p>
     <div class="row"><button class="btn ghost" id="amIn">Mit Apple Music anmelden</button><button class="btn ghost" id="amOut">Abmelden</button></div>
     <div class="row"><button class="btn ghost" data-close>Abbrechen</button><button class="btn primary" id="sSave">Speichern</button></div>
     <p class="muted small">Daten: MusicBrainz, die offene Musikdatenbank. Fehlt eine Verbindung, kann sie dort jeder nachtragen.</p>
@@ -2563,6 +2622,7 @@ function openSettings(){
     el.textContent = (info.exp && info.exp < new Date() ? 'Token abgelaufen am ' + exp + '.' : 'Token gültig bis ' + exp + '.') + (amFull() ? ' Angemeldet: ganze Songs.' : ' Nicht angemeldet.');
   };
   amShow(); $('#sTok').oninput = amShow;
+  $('#amTest').onclick = async () => { const o = $('#amTestOut'); o.textContent = 'Teste …'; LS.del('amMatch2'); try{ o.textContent = await amSelfTest(); }catch(e){ o.textContent = e.message; } };
   $('#amIn').onclick = async () => {
     const tok = $('#sTok').value.trim();
     if(tok && tok !== (settings().amToken || '')){ if(!amTokenInfo(tok)){ toast('Der Apple-Music-Token sieht nicht richtig aus'); return; } LS.set('settings', { ...LS.get('settings', {}), amToken:tok }); mk = null; mkLoading = null; }
@@ -2574,7 +2634,7 @@ function openSettings(){
     const tok = $('#sTok').value.trim();
     if(tok && !amTokenInfo(tok)){ toast('Der Apple-Music-Token sieht nicht richtig aus'); return; }
     const store = /^[a-z]{2}$/i.test($('#sStore').value.trim()) ? $('#sStore').value.trim().toLowerCase() : 'de';
-    if(tok !== (s.amToken || '') || store !== (s.amStore || 'de')){ mk = null; mkLoading = null; LS.del('amMatch'); }
+    if(tok !== (s.amToken || '') || store !== (s.amStore || 'de')){ mk = null; mkLoading = null; LS.del('amMatch2'); }
     LS.set('settings', { ...LS.get('settings', {}), name:$('#sName').value.trim().slice(0, 20), maxSongs:Math.max(0, parseInt($('#sMax').value, 10) || 0), bandLinks:$('#sBand').checked,
       colleagues:$('#sCol').checked, claims:$('#sClaim').checked, hints:$('#sHint').checked, amPreview:$('#sPrev').checked, amToken:tok, amStore:store });
     closeSheet(); toast('Gespeichert'); render();
@@ -2594,7 +2654,7 @@ function makeIcon(){
 
 /* ---------- Start ---------- */
 (async function init(){
-  makeIcon();
+  makeIcon(); LS.del('amMatch');
   if(game && !game.won){ view = 'game'; search.chip = firstWithId(anchors()); }
   const verifying = await readHash();
   if(!verifying){ render(); if(view === 'game'){ runSearch(true); prefetchAnchors(); } }
