@@ -208,6 +208,9 @@ body.hasplayer .toast{bottom:calc(220px + env(safe-area-inset-bottom,0px))}
 .pick{cursor:pointer;color:var(--fg)}
 .addband{color:var(--accent);font-weight:600}
 .iconlink{display:inline-flex;align-items:center;gap:6px;font-weight:600}
+.dicebtn{background:var(--surface2);border:1px solid var(--line);color:var(--fg);border-radius:999px;padding:7px 14px 7px 10px}
+.dicebtn svg{color:var(--accent)}
+.dicebtn:active{transform:scale(.97)}
 .btn.primary:disabled{background:var(--surface2);color:var(--muted);opacity:1}
 .row.minor>.btn{min-height:40px;padding:9px 12px;font-size:13px}
 .btn.small{min-height:36px;padding:7px 12px;font-size:13px}
@@ -1854,7 +1857,7 @@ function homeView(){
     <div id="dailyBox"><div class="busy"><span class="spin"></span><span>Wird vorbereitet …</span></div></div>
   </div>
   <div class="panel">
-    <div class="rankrow"><span class="eyebrow">Eigene Challenge</span><button class="linkbtn iconlink" id="btnRandom">${ICON.dice} Zufällig</button></div>
+    <div class="rankrow"><span class="eyebrow">Eigene Challenge</span><button class="btn small dicebtn" id="btnRandom">${ICON.dice} Zufällige Bands</button></div>
     <div class="vs">${pickBox('start', draft.start)}<button class="swap" id="btnSwap" aria-label="Start und Ziel tauschen" ${draft.start || draft.target ? '' : 'disabled'}>${ICON.swap}</button>${pickBox('target', draft.target)}</div>
     ${draft.duel ? `<p class="small">Duell gegen <b>${esc(draft.duel.name)}</b>: ${draft.duel.songs} Songs in ${fmtTime(draft.duel.secs * 1000)}. Weniger Songs gewinnen, bei Gleichstand die Zeit.</p>` : draft.best ? `<p class="small">Zu schlagen: <b>${draft.best} Songs</b></p>` : ''}
     <label class="toggle"><span>Zeitrennen<small>3 Minuten, 5 Bonuspunkte</small></span><input type="checkbox" id="race" ${draft.race ? 'checked' : ''}></label>
