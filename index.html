@@ -104,6 +104,31 @@ label{display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--mute
 .link.band .lbl{color:var(--band)} .link.claim .lbl{color:var(--claim)} .link.bad .lbl{color:var(--bad)}
 .link .lbl a{color:inherit}
 
+.rankbar{display:flex;flex-direction:column;gap:8px;width:100%}
+.rankrow{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.rankrow b{font-family:var(--f-display);font-size:18px}
+.meter{height:8px;border-radius:999px;background:var(--bg);overflow:hidden}
+.meter span{display:block;height:100%;background:var(--accent);border-radius:999px}
+.profilecard{text-align:left;cursor:pointer;color:var(--fg)}
+.fg{color:var(--fg)}
+.linkbtn{background:none;border:0;color:var(--band);font-size:13px;padding:4px 0}
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.tile{text-align:left;cursor:pointer;color:var(--fg);gap:4px}
+.tile b{font-family:var(--f-display);font-size:17px}
+.statgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.statgrid div{background:var(--bg);border-radius:10px;padding:10px;display:flex;flex-direction:column;gap:2px;min-width:0}
+.statgrid b{font:800 22px/1 var(--f-display);font-variant-numeric:tabular-nums}
+.statgrid span{font-size:12px;color:var(--muted)}
+.badges{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
+.badge{border:1px dashed var(--line);border-radius:10px;padding:10px;display:flex;flex-direction:column;gap:2px;opacity:.55}
+.badge.on{opacity:1;border-style:solid;border-color:var(--accent)}
+.badge b{font-size:14px}.badge span{font-size:12px;color:var(--muted)}.badge .when{color:var(--accent)}
+.pts{font:800 28px/1 var(--f-display);color:var(--accent);font-variant-numeric:tabular-nums}
+.scorelines{display:flex;flex-direction:column;gap:4px;font-size:14px}
+.scorelines div{display:flex;justify-content:space-between;gap:10px}
+.scorelines b{font-variant-numeric:tabular-nums}
+details.panel summary{cursor:pointer;font-weight:600}
+select{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:12px 14px;min-height:46px}
 .seg{display:grid;grid-template-columns:1fr 1fr;background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:3px;gap:3px}
 .seg button{border:0;background:transparent;border-radius:9px;padding:9px 6px;font-size:13px;font-weight:600;color:var(--muted)}
 .seg button.on{background:var(--surface2);color:var(--fg)}
@@ -374,8 +399,12 @@ function chooseRecording(id, title, names, cands, ctx){
 /* Beziehungen: Mitglied, Kollaboration (Duo-Projekte), Künstlername derselben Person */
 const LINK_TYPES = { 'member of band':1, 'collaboration':1, 'is person':1 };
 const relCache = new Map();
+function promote(path){
+  const i = queue.findIndex(j => j.path === path);
+  if(i > 0) queue.unshift(queue.splice(i, 1)[0]);
+}
 function artistInfo(id, prio = 'low'){
-  if(relCache.has(id)) return relCache.get(id);
+  if(relCache.has(id)){ if(prio === 'high') promote('artist/' + id + '?inc=artist-rels'); return relCache.get(id); }
   const p = mb('artist/' + id + '?inc=artist-rels', prio).then(a => ({
     ...artistPick(a),
     rels:(a.relations || []).filter(r => LINK_TYPES[r.type] && r.artist).map(r => ({
@@ -739,7 +768,7 @@ function graphPath(starts, targets, opts){
   let frontier = T.slice(), hit = -1;
   const visit = (x, y, c, nextF) => {
     if(seen[y]) return false;
-    if(badEdges.has(((c & 7) === 2 ? 'f:' : '') + g.ids[y] + '>' + g.ids[x])) return false;
+    if(!opts.pure && badEdges.has(((c & 7) === 2 ? 'f:' : '') + g.ids[y] + '>' + g.ids[x])) return false;
     seen[y] = 1; next[y] = x; nk[y] = c; nextF.push(y);
     return S.has(y);
   };
@@ -752,7 +781,7 @@ function graphPath(starts, targets, opts){
           if((pass === 1) !== isBand || (isBand && !opts.bandLinks)) continue;
           if(visit(x, g.nb[k], c, nextF)){ hit = g.nb[k]; break; }
         }
-        if(hit < 0){ const ex = g.extra.get(x); if(ex) for(const [y, c] of ex){
+        if(hit < 0 && !opts.pure){ const ex = g.extra.get(x); if(ex) for(const [y, c] of ex){
           const isBand = (c & 7) !== 2;
           if((pass === 1) !== isBand || (isBand && !opts.bandLinks)) continue;
           if(visit(x, y, c, nextF)){ hit = y; break; }
@@ -864,14 +893,14 @@ function isWin(rec){ return !game.free && rec.artists.some(a => sameArtist(a, ga
 function fmtTime(ms){ const s = Math.max(0, Math.floor(ms / 1000)); return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0'); }
 function prefetchAnchors(){ if(settings().bandLinks) anchors().filter(a => a.id).forEach(a => artistInfo(a.id).catch(() => {})); }
 
-function newGame(start, target, best){
-  game = { ch:{ start, target }, steps:[], startedAt:Date.now(), finishedAt:null, won:false, best:best || null };
+function newGame(start, target, best, meta = {}){
+  game = { ch:{ start, target }, steps:[], startedAt:Date.now(), finishedAt:null, won:false, best:best || null, kind:'normal', ...meta };
   LS.set('game', game); view = 'game';
   search = { q:'', chip:start, offset:0, items:[], total:0, loading:false, collabOnly:false, seq:0 };
   render(); runSearch(true); prefetchAnchors();
 }
 function newFreeGame(){
-  game = { free:true, ch:{ start:null, target:null }, steps:[], startedAt:Date.now(), finishedAt:null, won:false, best:null };
+  game = { free:true, kind:'free', ch:{ start:null, target:null }, steps:[], startedAt:Date.now(), finishedAt:null, won:false, best:null };
   LS.set('game', game); view = 'game'; songMode('search');
   search = { q:'', chip:null, offset:0, items:[], total:0, loading:false, collabOnly:false, seq:0 };
   render();
@@ -982,10 +1011,19 @@ function undo(){
   view = 'game'; search.chip = firstWithId(anchors()); search.q = '';
   render(); runSearch(true);
 }
+function guardRunning(fn){
+  if(game && !game.won && game.steps.length){
+    sheet(`<h2>Laufende Kette verwerfen?</h2><p class="muted small">Deine aktuelle Kette mit ${game.steps.length} Song${game.steps.length === 1 ? '' : 's'} geht dabei verloren.</p><div class="row"><button class="btn ghost" data-close>Abbrechen</button><button class="btn primary" id="grGo">Verwerfen und starten</button></div>`);
+    $('#grGo').onclick = () => { closeSheet(); fn(); };
+    return;
+  }
+  fn();
+}
 function saveHistory(){
+  const aw = award();
   const h = LS.get('history', []);
   h.unshift({ s:game.ch.start.name, t:game.ch.target.name, n:game.steps.length,
-    claims:game.steps.filter(x => x.link.type === 'claim').length, ms:game.finishedAt - game.startedAt, at:game.finishedAt, hints:game.hints || 0, solved:!!game.solved, code:chainCode(game) });
+    claims:game.steps.filter(x => x.link.type === 'claim').length, ms:game.finishedAt - game.startedAt, at:game.finishedAt, hints:game.hints || 0, solved:!!game.solved, points:aw.score.total, code:chainCode(game) });
   LS.set('history', h.slice(0, 30));
 }
 
@@ -1005,6 +1043,238 @@ function chainCode(g){ return [g.ch.start.id, g.ch.target.id, ...g.steps.map(ste
 const MBID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 function tokenValid(t){ return (t.mbid ? MBID.test(t.mbid) : !!t.sp) && (!t.sp || SPID.test(t.sp)) && t.arts.every(a => MBID.test(a)); }
 
+/* ============ Spielsystem: Tageskette, Par, Punkte, Serie, Ränge, Abzeichen, Musikatlas ============ */
+const DAILY_POOL = ['AC/DC','Linkin Park','Beyoncé','Peter Maffay','Cro','Queen','Rihanna','Sido','Coldplay','Eminem','Udo Lindenberg','Kraftklub',
+  'Adele','Snoop Dogg','Muse','Nena','Bon Jovi','Ed Sheeran','Herbert Grönemeyer','Shakira','Wanda','Green Day','Nickelback','Beatsteaks','Scooter',
+  'Tokio Hotel','The Weeknd','Santiano','Sportfreunde Stiller','Mark Forster','Billie Eilish','Iron Maiden','David Guetta','Die Ärzte','Slash','Nirvana',
+  'Rammstein','Taylor Swift','Helene Fischer','Die Toten Hosen','Andreas Gabalier','Volbeat','Foo Fighters','Metallica','Red Hot Chili Peppers','Deichkind',
+  'Peter Fox','Seeed','Jan Delay','Gorillaz','Daft Punk','PUR','Seiler und Speer','Fettes Brot','Die Fantastischen Vier','Revolverheld','Silbermond','Juli',
+  'Wir sind Helden','Bushido','Capital Bra','Apache 207','Roland Kaiser','Wolfgang Petry','Matthias Reim','DJ Ötzi','Böhse Onkelz','In Extremo',
+  'Subway to Sally','Sabaton','Scorpions','Accept','Aerosmith','Kiss','Ozzy Osbourne','Black Sabbath','Motörhead','Lady Gaga','Madonna','Michael Jackson',
+  'Prince','Elton John','David Bowie','The Beatles','The Rolling Stones','U2','Bruce Springsteen','Johnny Cash','Dolly Parton','Drake','Dua Lipa',
+  'Calvin Harris','Avicii','Robbie Williams','Take That','Backstreet Boys','Spice Girls','ABBA','Modern Talking','Falco','Marteria','Casper','K.I.Z',
+  'Haftbefehl','LEA','Max Giesinger','Tim Bendzko','Andreas Bourani','The Pretty Reckless','Bring Me the Horizon','Lena','Sarah Connor','Nico Santos'];
+const PACKS = [
+  { id:'mwe', name:'Männerwochenende', desc:'Die Aufgaben aus eurer Runde', list:[['Rammstein','Taylor Swift'],['Seiler und Speer','Deichkind'],['Helene Fischer','The Pretty Reckless'],['Volbeat','Red Hot Chili Peppers'],['PUR','Gorillaz']] },
+  { id:'rock', name:'Deutschrock', desc:'Von Ärzte bis Onkelz', list:[['Die Ärzte','Rammstein'],['Udo Lindenberg','In Extremo'],['Peter Maffay','Böhse Onkelz'],['Revolverheld','Scorpions'],['Beatsteaks','Subway to Sally']] },
+  { id:'schlagermetal', name:'Schlager trifft Metal', desc:'Quer durch die Welten', list:[['Helene Fischer','Sabaton'],['Roland Kaiser','Metallica'],['DJ Ötzi','Slash'],['Andreas Gabalier','Iron Maiden'],['Wolfgang Petry','Motörhead']] },
+  { id:'rap', name:'Deutschrap', desc:'Von Fanta 4 bis Apache', list:[['Sido','LEA'],['Cro','Bushido'],['Marteria','K.I.Z'],['Fettes Brot','Capital Bra'],['Die Fantastischen Vier','Apache 207']] },
+  { id:'pop', name:'Pop-Giganten', desc:'Die ganz Großen', list:[['ABBA','Dua Lipa'],['Michael Jackson','Billie Eilish'],['Madonna','Ed Sheeran'],['The Beatles','Taylor Swift'],['Elton John','Linkin Park']] },
+  { id:'90er', name:'90er und 2000er', desc:'Boygroups, Grunge, Rave', list:[['Backstreet Boys','Linkin Park'],['Spice Girls','Coldplay'],['Take That','Green Day'],['Scooter','Nirvana'],['Modern Talking','Daft Punk']] },
+];
+const RANKS = [[0,'Roadie'],[50,'Bandprobe'],[150,'Vorband'],[300,'Session-Musiker'],[600,'Tourmusiker'],[1000,'Headliner'],[2000,'Legende']];
+const BADGES = [
+  ['erste','Erste Kette','Die erste eigene Kette gelöst'],
+  ['ohnetipp','Ohne Tipp','Eine Aufgabe ganz ohne Tipp gelöst'],
+  ['par','Punktlandung','Genau auf Par gelöst'],
+  ['unterpar','Unter Par','Kürzer als das Par gelöst'],
+  ['bandwechsel','Bandwechsler','Drei Band-Links in einer Kette'],
+  ['blitz','Blitzkette','In unter 2 Minuten gelöst'],
+  ['uhr','Gegen die Uhr','Ein Zeitrennen gewonnen'],
+  ['duell','Duell gewonnen','Eine Duell-Vorgabe geschlagen'],
+  ['serie7','7 Tage am Stück','Sieben Tagesketten in Folge'],
+  ['serie30','30 Tage am Stück','Dreißig Tagesketten in Folge'],
+  ['tage10','10 Tagesketten','Zehn Tagesketten gelöst'],
+  ['atlas100','Musikatlas 100','100 verschiedene Künstler genutzt'],
+  ...PACKS.map(p => ['paket-' + p.id, p.name + ' komplett', 'Alle Aufgaben im Paket gelöst']),
+];
+const PAR_RANGE = [[4,5],[2,2],[2,2],[3,3],[3,3],[3,4],[3,4]]; // Sonntag bis Samstag
+
+const pad2 = n => String(n).padStart(2, '0');
+function dayKey(d = new Date()){ return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; }
+function dayDate(k){ const [y, m, d] = k.split('-').map(Number); return new Date(y, m - 1, d); }
+function addDays(k, n){ const d = dayDate(k); d.setDate(d.getDate() + n); return dayKey(d); }
+function fmtDay(k){ const [y, m, d] = k.split('-'); return `${d}.${m}.${y}`; }
+function weekOf(k){ const d = dayDate(k); d.setDate(d.getDate() - (d.getDay() + 6) % 7); return dayKey(d); }
+const WEEKDAY = ['Sonntag','Montag','Dienstag','Mittwoch','Donnerstag','Freitag','Samstag'];
+
+function profile(){
+  const p = Object.assign({ points:0, games:0, daily:{}, streak:{}, badges:{}, atlas:{}, packs:{}, duelsWon:0 }, LS.get('profile', {}));
+  p.streak = Object.assign({ count:0, best:0, last:null, joker:null }, p.streak);
+  return p;
+}
+function saveProfile(p){ LS.set('profile', p); }
+function rankOf(points){
+  let i = 0; while(i + 1 < RANKS.length && points >= RANKS[i + 1][0]) i++;
+  const next = RANKS[i + 1];
+  return { name:RANKS[i][1], at:RANKS[i][0], next:next ? next[1] : null, nextAt:next ? next[0] : null };
+}
+/* Aktuelle Serie: gilt, solange gestern gespielt wurde; ein verpasster Tag pro Woche wird per Joker überbrückt */
+function streakNow(p){
+  const s = p.streak, t = dayKey();
+  if(!s.last) return 0;
+  if(s.last === t || s.last === addDays(t, -1)) return s.count;
+  if(s.last === addDays(t, -2) && s.joker !== weekOf(t)) return s.count;
+  return 0;
+}
+function bumpStreak(p, k){
+  const s = p.streak;
+  if(s.last === k) return;
+  if(s.last === addDays(k, -1)) s.count++;
+  else if(s.last === addDays(k, -2) && s.joker !== weekOf(k)){ s.count++; s.joker = weekOf(k); }
+  else s.count = 1;
+  s.last = k; s.best = Math.max(s.best, s.count);
+}
+
+/* Künstler im Musiknetz nach Namen; bei gleichen Namen der mit den meisten Verbindungen */
+let nameIdx = null, nameIdxFor = null;
+function graphByName(name){
+  if(!graph || !graph.baseN) return null;
+  if(nameIdxFor !== graph){
+    nameIdx = new Map(); nameIdxFor = graph;
+    for(let i = 0; i < graph.baseN; i++){
+      const k = (graph.names[i] || '').toLowerCase(), c = nameIdx.get(k);
+      if(c === undefined || graph.off[i + 1] - graph.off[i] > graph.off[c + 1] - graph.off[c]) nameIdx.set(k, i);
+    }
+  }
+  const i = nameIdx.get(name.toLowerCase());
+  return i === undefined ? null : { id:graph.ids[i], name:graph.names[i], type:'', country:'', dis:'' };
+}
+/* Par = kürzester Weg im Musiknetz (ohne Geräte-Ergänzungen, damit es für alle gleich ist);
+   Band-Link plus anschließender gemeinsamer Song zählen als ein Song */
+function parFor(a, b){
+  if(!graph || a.id === b.id) return null;
+  const gp = graphPath([a], [b], { bandLinks:true, pure:true });
+  if(!gp) return null;
+  let par = 0; const e = gp.edges;
+  for(let i = 0; i < e.length; i++){ par++; if(e[i].via.type === 'band' && e[i + 1] && e[i + 1].via.type === 'feat') i++; }
+  return Math.max(1, par);
+}
+function seeded(seed){
+  let h = 2166136261; for(const ch of seed) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
+  return () => { h = (h + 0x6D2B79F5) | 0; let t = h; t = Math.imul(t ^ t >>> 15, t | 1); t ^= t + Math.imul(t ^ t >>> 7, t | 61); return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+}
+/* Tageskette: aus Datum und Musiknetz berechnet, daher auf allen Geräten gleich */
+async function dailyFor(k){
+  const cache = LS.get('dailies', {});
+  if(cache[k]) return cache[k];
+  await loadGraph();
+  if(!graph.baseN) return null;
+  const r = seeded('bandkette-' + k), [lo, hi] = PAR_RANGE[dayDate(k).getDay()];
+  const pool = DAILY_POOL.map(graphByName).filter(Boolean);
+  let pick = null, fallback = null;
+  for(let t = 0; t < 300 && !pick; t++){
+    const a = pool[Math.floor(r() * pool.length)], b = pool[Math.floor(r() * pool.length)];
+    if(a.id === b.id) continue;
+    const par = parFor(a, b); if(!par) continue;
+    if(!fallback && par >= 2) fallback = { s:a, t:b, par };
+    if(par >= lo && par <= hi) pick = { s:a, t:b, par };
+  }
+  const d = pick || fallback; if(!d) return null;
+  cache[k] = d;
+  const keys = Object.keys(cache).sort(); while(keys.length > 40) delete cache[keys.shift()];
+  LS.set('dailies', cache);
+  return d;
+}
+function parWord(n, par){
+  const d = n - par;
+  if(d <= -2) return 'Eagle'; if(d === -1) return 'Birdie'; if(d === 0) return 'Par';
+  if(d === 1) return 'Bogey'; if(d === 2) return 'Doppel-Bogey'; return `${d} über Par`;
+}
+function scoreGame(g){
+  if(g.solved) return { total:0, counted:false, lines:[['Von der App gelöst', 0]] };
+  if(g.timeUp) return { total:0, counted:false, lines:[['Zeit abgelaufen', 0]] };
+  const L = [], n = g.steps.length;
+  L.push(['Kette gelöst', g.free ? 5 : 10]);
+  if(g.par){ const d = g.par - n; if(d > 0) L.push([`${d} unter Par`, 5 + 5 * d]); else if(d === 0) L.push(['Par getroffen', 5]); else L.push([`${-d} über Par`, 2 * d]); }
+  if(g.kind === 'daily') L.push(['Tageskette', 5]);
+  if(g.timeLimit) L.push(['Gegen die Uhr', 5]);
+  if(g.hints) L.push([`${g.hints} Tipp${g.hints === 1 ? '' : 's'}`, -2 * g.hints]);
+  const claims = g.steps.filter(x => x.link.type === 'claim').length;
+  if(claims) L.push([`${claims} unbelegt`, -3 * claims]);
+  const total = Math.max(1, L.reduce((s, x) => s + x[1], 0));
+  if(g.kind === 'daily' && g.ranked === false) return { total:0, counted:false, lines:[...L, ['Tageskette schon gewertet', 0]] };
+  return { total, counted:true, lines:L };
+}
+/* Wird einmal pro gelöster Kette aufgerufen: Punkte, Serie, Abzeichen, Atlas, Pakete, Duell, Party */
+function award(){
+  if(game.award) return game.award;
+  const sc = scoreGame(game), n = game.steps.length, ms = game.finishedAt - game.startedAt;
+  const a = { score:sc, newBadges:[], duel:null, rankUp:null };
+  if(game.duel && !game.solved && !game.timeUp){
+    const secs = Math.round(ms / 1000);
+    a.duel = n < game.duel.songs || (n === game.duel.songs && secs < game.duel.secs) ? 'win' : n === game.duel.songs && secs === game.duel.secs ? 'tie' : 'lose';
+  }
+  if(game.kind === 'party'){
+    const party = LS.get('party', null);
+    if(party && party.teams[game.team]){
+      party.teams[game.team].res = { n, ms, hints:game.hints || 0, points:sc.total, solved:!!game.solved, code:chainCode(game) };
+      party.cur = game.team + 1; LS.set('party', party);
+    }
+    game.award = a; LS.set('game', game); return a;
+  }
+  const p = profile(), before = rankOf(p.points).name, own = !game.solved && !game.timeUp;
+  if(sc.counted) p.points += sc.total;
+  if(!game.solved) p.games++;
+  if(game.kind === 'daily' && game.ranked !== false){
+    p.daily[game.day] = { n, par:game.par, hints:game.hints || 0, ms, solved:!!game.solved, share:dailyShareText() };
+    if(own && game.day === dayKey()) bumpStreak(p, game.day);
+  }
+  if(own){
+    game.steps.forEach(st => st.rec.artists.forEach(x => { if(x.id){ const e = p.atlas[x.id]; p.atlas[x.id] = [x.name, (e ? e[1] : 0) + 1]; } }));
+    if(game.kind === 'pack'){ const l = p.packs[game.pack] || []; if(!l.includes(game.idx)) l.push(game.idx); p.packs[game.pack] = l; }
+    if(a.duel === 'win') p.duelsWon++;
+  }
+  const earn = id => { if(!p.badges[id]){ p.badges[id] = dayKey(); a.newBadges.push(id); } };
+  if(own){
+    earn('erste');
+    if(!game.free && !game.hints) earn('ohnetipp');
+    if(game.par && n === game.par) earn('par');
+    if(game.par && n < game.par) earn('unterpar');
+    if(game.steps.filter(x => x.link.type === 'band' || x.link.type === 'colleague').length >= 3) earn('bandwechsel');
+    if(ms < 120000 && n >= 2) earn('blitz');
+    if(game.timeLimit) earn('uhr');
+    if(a.duel === 'win') earn('duell');
+    if(p.streak.count >= 7) earn('serie7');
+    if(p.streak.count >= 30) earn('serie30');
+    if(Object.values(p.daily).filter(d => !d.solved).length >= 10) earn('tage10');
+    if(Object.keys(p.atlas).length >= 100) earn('atlas100');
+    PACKS.forEach(pk => { if((p.packs[pk.id] || []).length >= pk.list.length) earn('paket-' + pk.id); });
+  }
+  const after = rankOf(p.points).name;
+  if(after !== before) a.rankUp = { from:before, to:after };
+  saveProfile(p);
+  game.award = a; LS.set('game', game);
+  a.newBadges.forEach((id, i) => setTimeout(() => toast('Neues Abzeichen: ' + BADGES.find(b => b[0] === id)[1]), 600 + i * 3200));
+  return a;
+}
+const LINK_SYM = { start:'🎤', feat:'🎤', band:'🎸', colleague:'🤝', claim:'❔' };
+function dailyShareText(){
+  const n = game.steps.length;
+  const sym = game.steps.map(st => LINK_SYM[st.link.type] || '🎤').join('') + '💡'.repeat(game.hints || 0);
+  return [`Band-Kette · Tageskette ${fmtDay(game.day)}`, `${game.ch.start.name} → ${game.ch.target.name}`,
+    game.solved ? 'Von der App gelöst' : `Par ${game.par} · ${n} Song${n === 1 ? '' : 's'} · ${parWord(n, game.par)}`, sym, `${BASE}#d=${game.day}`].join('\n');
+}
+
+/* Tageskette, Pakete und Party starten */
+async function startDaily(k){
+  toast('Tageskette wird vorbereitet …');
+  try{
+    const d = await dailyFor(k);
+    if(!d){ toast('Für die Tageskette fehlt das Musiknetz'); return; }
+    const done = profile().daily[k];
+    newGame(d.s, d.t, null, { kind:'daily', day:k, par:d.par, ranked:!done });
+    if(done) toast('Schon gespielt: diese Runde bringt keine Punkte');
+  }catch(e){ handleErr(e); }
+}
+async function startPack(pid, idx){
+  const pk = PACKS.find(p => p.id === pid); if(!pk) return;
+  try{
+    await loadGraph();
+    const a = graphByName(pk.list[idx][0]), b = graphByName(pk.list[idx][1]);
+    if(!a || !b){ toast('Band nicht im Musiknetz gefunden'); return; }
+    newGame(a, b, null, { kind:'pack', pack:pid, idx, par:parFor(a, b) });
+  }catch(e){ handleErr(e); }
+}
+function giveUpParty(){
+  const party = LS.get('party', null);
+  if(party && game && game.kind === 'party' && party.teams[game.team]){
+    party.teams[game.team].res = { n:game.steps.length, ms:Date.now() - game.startedAt, hints:game.hints || 0, points:0, gaveUp:true };
+    party.cur = game.team + 1; LS.set('party', party);
+  }
+  game = null; LS.del('game'); view = 'party'; render();
+}
+
 /* ============ Rendering ============ */
 const LOGO = `<svg width="34" height="34" viewBox="0 0 34 34" aria-hidden="true"><rect width="34" height="34" rx="9" fill="#FF6B3D"/><circle cx="10" cy="11" r="4" fill="#15121F"/><circle cx="24" cy="23" r="4" fill="#15121F"/><path d="M12.5 13.5 21.5 20.5" stroke="#15121F" stroke-width="3" stroke-linecap="round"/></svg>`;
 const GEAR = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>`;
@@ -1015,6 +1285,9 @@ function render(){
   if(view === 'verify' && verify){ app.innerHTML = verifyView(); bindVerify(); return; }
   if(view === 'game' && game && !game.won){ app.innerHTML = gameView(); bindGame(); timerId = setInterval(tick, 1000); return; }
   if(view === 'result' && game && game.won){ app.innerHTML = resultView(); bindResult(); return; }
+  if(view === 'profile'){ app.innerHTML = profileView(); bindProfile(); return; }
+  if(view === 'packs'){ app.innerHTML = packsView(); bindPacks(); return; }
+  if(view === 'party'){ app.innerHTML = partyView(); bindParty(); return; }
   view = 'home'; app.innerHTML = homeView(); bindHome();
 }
 
@@ -1023,38 +1296,44 @@ function pickBox(which, a){
     <span class="eyebrow">${which === 'start' ? 'Startband' : 'Zielband'}</span>
     ${a ? `<b>${esc(a.name)}</b><span class="muted small">${esc(artistMeta(a))}</span>` : `<span class="muted">Antippen zum Suchen</span>`}</button>`;
 }
+const USER = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>`;
 function homeView(){
-  const h = LS.get('history', []);
+  const h = LS.get('history', []), p = profile(), st = streakNow(p);
   const running = game && !game.won;
+  const doneDaily = p.daily[dayKey()];
+  const packDone = PACKS.reduce((n, pk) => n + (p.packs[pk.id] || []).length, 0), packAll = PACKS.reduce((n, pk) => n + pk.list.length, 0);
   return `
   <div class="top"><div class="logo">${LOGO}<h1>Band-Kette</h1></div>
-    <button class="iconbtn" id="btnSettings" aria-label="Spielregeln und Einstellungen">${GEAR}</button></div>
-  <p class="muted">Von der Startband zur Zielband, Song für Song. Jede Verbindung wird gegen die offene Musikdatenbank MusicBrainz geprüft: gemeinsame Künstler auf einem Song oder belegte Bandmitgliedschaften.</p>
-  ${running ? `<div class="panel"><span class="eyebrow">${game.free ? 'Freie Kette in Arbeit' : 'Laufende Challenge'}</span>
+    <div style="display:flex;gap:8px"><button class="iconbtn" id="btnProfile" aria-label="Dein Profil">${USER}</button><button class="iconbtn" id="btnSettings" aria-label="Spielregeln und Einstellungen">${GEAR}</button></div></div>
+  <button class="panel profilecard" id="btnProfile2" aria-label="Profil öffnen">${rankBar(p)}<span class="small muted">Serie: <b class="fg">${st} Tag${st === 1 ? '' : 'e'}</b> · Abzeichen: <b class="fg">${Object.keys(p.badges).length}</b> · Musikatlas: <b class="fg">${Object.keys(p.atlas).length}</b></span></button>
+  <div class="panel dailycard"><div class="rankrow"><span class="eyebrow">Tageskette · ${WEEKDAY[new Date().getDay()]}, ${fmtDay(dayKey())}</span><button class="linkbtn" id="btnArchive">Archiv</button></div>
+    <div id="dailyBox"><div class="busy"><span class="spin"></span><span>Wird vorbereitet …</span></div></div>
+    ${doneDaily ? '' : '<p class="muted small">Eine Aufgabe für alle. Wer Par trifft, bekommt Bonuspunkte; die Serie wächst jeden Tag.</p>'}
+  </div>
+  ${running ? `<div class="panel"><span class="eyebrow">${game.free ? 'Freie Kette in Arbeit' : game.kind === 'daily' ? 'Tageskette läuft' : game.kind === 'party' ? 'Party-Runde läuft' : 'Laufende Challenge'}</span>
     <h3>${game.free ? 'Freie Kette' : esc(game.ch.start.name) + ' → ' + esc(game.ch.target.name)}</h3>
     <span class="muted small">${game.steps.length} Songs bisher</span>
     <div class="row"><button class="btn primary" id="btnResume">Weiterbauen</button><button class="btn ghost" id="btnAbort">Verwerfen</button></div></div>` : ''}
   <div class="panel">
     <span class="eyebrow">Neue Challenge</span>
     <div class="vs">${pickBox('start', draft.start)}<span class="arrow">→</span>${pickBox('target', draft.target)}</div>
-    ${draft.best ? `<p class="small">Zu schlagen: <b>${draft.best} Songs</b></p>` : ''}
+    ${draft.duel ? `<p class="small">Duell gegen <b>${esc(draft.duel.name)}</b>: ${draft.duel.songs} Songs in ${fmtTime(draft.duel.secs * 1000)}. Weniger Songs gewinnen, bei Gleichstand die Zeit.</p>` : draft.best ? `<p class="small">Zu schlagen: <b>${draft.best} Songs</b></p>` : ''}
+    <label class="check small"><input type="checkbox" id="race" ${draft.race ? 'checked' : ''}> Zeitrennen: 3 Minuten, 5 Bonuspunkte</label>
     <div class="row">
       <button class="btn ghost" id="btnRandom">Zufällige Bands</button>
       <button class="btn primary" id="btnStart" ${draft.start && draft.target ? '' : 'disabled'}>Los geht’s</button>
     </div>
     <button class="btn ghost block" id="btnShareCh" ${draft.start && draft.target ? '' : 'disabled'}>Challenge an die Gruppe schicken</button>
-    <button class="btn ghost block" id="btnAutoBuild" ${draft.start && draft.target ? '' : 'disabled'}>Kette von der App bauen lassen</button>
+    <button class="btn ghost block" id="btnAutoBuild" ${draft.start && draft.target ? '' : 'disabled'}>Kette von der App bauen lassen (0 Punkte)</button>
+  </div>
+  <div class="tiles">
+    <button class="panel tile" id="btnPacks"><span class="eyebrow">Themenpakete</span><b>${PACKS.length} Pakete</b><span class="muted small">${packDone} von ${packAll} gelöst</span></button>
+    <button class="panel tile" id="btnParty"><span class="eyebrow">Party-Modus</span><b>Teams am Handy</b><span class="muted small">${LS.get('party', null) ? 'Runde läuft' : 'für Abende mit Freunden'}</span></button>
   </div>
   <div class="panel">
     <span class="eyebrow">Freie Kette</span>
     <p class="muted small">Ohne festgelegte Bands einfach Song an Song hängen. Beim Abschließen wählst du Start- und Zielband aus dem ersten und letzten Song und kannst die Kette als Challenge verschicken.</p>
     <button class="btn block" id="btnFree">Freie Kette bauen</button>
-  </div>
-  <div class="panel">
-    <span class="eyebrow">Vorschläge</span>
-    <div class="list">${PRESETS.map((p, i) => `<button class="item" data-preset="${i}">
-      <div class="txt"><div class="t1">${esc(p.s[0])} → ${esc(p.t[0])}</div>${p.tag ? `<div class="t2">${esc(p.tag)}</div>` : ''}</div>
-      <span class="tag">Spielen</span></button>`).join('')}</div>
   </div>
   <div class="panel">
     <span class="eyebrow">Kette eines Mitspielers prüfen</span>
@@ -1065,24 +1344,45 @@ function homeView(){
   ${h.length ? `<div class="panel"><span class="eyebrow">Deine Ergebnisse</span><div class="list">${h.slice(0, 10).map((x, i) => `
     <button class="item" data-hist="${i}"><div class="txt"><div class="t1">${esc(x.s)} → ${esc(x.t)}</div>
     <div class="t2">${new Date(x.at).toLocaleDateString('de-DE')} · ${fmtTime(x.ms)}${x.claims ? ' · ' + x.claims + ' unbelegt' : ''}${x.hints ? ' · ' + x.hints + ' Tipps' : ''}${x.solved ? ' · von der App gelöst' : ''}</div></div>
-    <span class="tag ok">${x.n} Songs</span></button>`).join('')}</div></div>` : ''}`;
+    <span class="tag ok">${x.n} Songs${x.points !== undefined ? ' · ' + x.points + ' P.' : ''}</span></button>`).join('')}</div></div>` : ''}`;
+}
+async function fillDaily(){
+  const box = $('#dailyBox'); if(!box) return;
+  const k = dayKey();
+  try{
+    const d = await dailyFor(k), el = $('#dailyBox'); if(!el) return;
+    if(!d){ el.innerHTML = '<p class="muted small">Für die Tageskette fehlt das Musiknetz.</p>'; return; }
+    const done = profile().daily[k];
+    el.innerHTML = `<h3>${esc(d.s.name)} → ${esc(d.t.name)}</h3><span class="muted small">Par ${d.par}</span>
+      ${done ? `<div class="verdict ${done.solved ? 'claim' : 'ok'}">${done.solved ? 'Heute von der App gelöst, 0 Punkte' : `Gelöst mit ${done.n} Songs: ${parWord(done.n, done.par)}`}</div>
+      <div class="row"><button class="btn primary" id="dShare">Ergebnis teilen</button><button class="btn ghost" id="dPlay">Nochmal spielen</button></div>`
+      : '<button class="btn primary block" id="dPlay">Tageskette spielen</button>'}`;
+    $('#dPlay').onclick = () => guardRunning(() => startDaily(k));
+    if($('#dShare')) $('#dShare').onclick = () => shareText(done.share || `Band-Kette · Tageskette ${fmtDay(k)}\n${BASE}#d=${k}`);
+  }catch(e){ const el = $('#dailyBox'); if(el) el.innerHTML = `<p class="muted small">Tageskette nicht verfügbar: ${esc(e.message)}</p>`; }
 }
 function bindHome(){
   $$('[data-pick]').forEach(b => b.onclick = () => openArtistSheet(b.dataset.pick));
-  $$('[data-preset]').forEach(b => b.onclick = () => startPreset(PRESETS[+b.dataset.preset], b));
   $$('[data-hist]').forEach(b => b.onclick = () => { const x = LS.get('history', [])[+b.dataset.hist]; if(x && x.code) startVerify(x.code); });
   $('#btnRandom').onclick = randomChallenge;
-  $('#btnStart').onclick = () => newGame(draft.start, draft.target, draft.best);
+  $('#race').onchange = e => { draft.race = e.target.checked; };
+  const meta = () => ({ duel:draft.duel || null, timeLimit:draft.race ? 180000 : null });
+  $('#btnStart').onclick = () => guardRunning(() => newGame(draft.start, draft.target, draft.best, meta()));
   $('#btnShareCh').onclick = () => shareChallenge(draft.start, draft.target, draft.best);
-  $('#btnAutoBuild').onclick = () => { newGame(draft.start, draft.target, draft.best); openHints({ auto:true }); };
-  $('#btnFree').onclick = () => { if(game && !game.won && game.steps.length){ toast('Erst die laufende Kette weiterbauen oder verwerfen'); return; } newFreeGame(); };
+  $('#btnAutoBuild').onclick = () => guardRunning(() => { newGame(draft.start, draft.target, draft.best, meta()); openHints({ auto:true }); });
+  $('#btnFree').onclick = () => guardRunning(newFreeGame);
   $('#btnSettings').onclick = openSettings;
+  $('#btnProfile').onclick = $('#btnProfile2').onclick = () => { view = 'profile'; render(); };
+  $('#btnPacks').onclick = () => { view = 'packs'; render(); };
+  $('#btnParty').onclick = () => { view = 'party'; render(); };
+  $('#btnArchive').onclick = openArchive;
   $('#btnVerify').onclick = () => {
     const v = $('#verifyIn').value.trim(); const m = v.match(/#k=([^\s]+)/);
     startVerify(m ? m[1] : v);
   };
   if($('#btnResume')) $('#btnResume').onclick = () => { view = 'game'; search.chip = firstWithId(anchors()); render(); runSearch(true); prefetchAnchors(); };
-  if($('#btnAbort')) $('#btnAbort').onclick = () => { game = null; LS.del('game'); render(); };
+  if($('#btnAbort')) $('#btnAbort').onclick = () => { if(game && game.kind === 'party'){ giveUpParty(); return; } game = null; LS.del('game'); render(); };
+  fillDaily();
 }
 async function startPreset(p, btn){
   const tag = btn.querySelector('.tag'); tag.textContent = 'Suche …';
@@ -1093,11 +1393,11 @@ async function startPreset(p, btn){
   }catch(e){ handleErr(e); tag.textContent = 'Spielen'; }
 }
 async function randomChallenge(){
-  const btn = $('#btnRandom'); btn.disabled = true; btn.textContent = 'Suche …';
+  const btn = $('#btnRandom') || $('#pRandom'); if(btn){ btn.disabled = true; btn.textContent = 'Suche …'; }
   const i = Math.floor(Math.random() * POOL.length); let j; do { j = Math.floor(Math.random() * POOL.length); } while(j === i);
   try{
     const a = await findArtist(...POOL[i]); const b = await findArtist(...POOL[j]);
-    draft.start = a; draft.target = b; draft.best = null;
+    draft.start = a; draft.target = b; draft.best = null; draft.duel = null;
   }catch(e){ handleErr(e); }
   render();
 }
@@ -1149,11 +1449,12 @@ function gameView(){
       <button class="iconbtn" id="btnHint" aria-label="Tipp anzeigen"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2.1h5c0-.9.4-1.6 1-2.1A6 6 0 0 0 12 3z"/></svg></button>
       <button class="iconbtn" id="btnUndo" aria-label="Letzten Song entfernen" ${game.steps.length ? '' : 'disabled'}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/></svg></button>
     </div>
-    <div class="stats"><span>Songs <b>${game.steps.length}${s.maxSongs ? '/' + s.maxSongs : ''}</b></span>${game.best ? `<span>Zu schlagen <b>${game.best}</b></span>` : ''}<span>Zeit <b id="clock">${fmtTime(Date.now() - game.startedAt)}</b></span>${claims ? `<span>Unbelegt <b>${claims}</b></span>` : ''}${game.hints ? `<span>Tipps <b>${game.hints}</b></span>` : ''}</div>
+    <div class="stats">${game.kind === 'party' ? `<span>Team <b>${esc(game.teamName || '')}</b></span>` : game.kind === 'daily' ? `<span><b>Tageskette${game.ranked === false ? ' (ohne Wertung)' : ''}</b></span>` : ''}<span>Songs <b>${game.steps.length}${s.maxSongs ? '/' + s.maxSongs : ''}</b></span>${game.par ? `<span>Par <b>${game.par}</b></span>` : ''}${game.duel ? `<span>${esc(game.duel.name)} <b>${game.duel.songs}</b></span>` : game.best ? `<span>Zu schlagen <b>${game.best}</b></span>` : ''}<span>${game.timeLimit && !game.timeUp ? 'Restzeit' : 'Zeit'} <b id="clock">${game.timeUp ? 'abgelaufen' : fmtTime(game.timeLimit ? game.timeLimit - (Date.now() - game.startedAt) : Date.now() - game.startedAt)}</b></span>${claims ? `<span>Unbelegt <b>${claims}</b></span>` : ''}${game.hints ? `<span>Tipps <b>${game.hints}</b></span>` : ''}</div>
   </div>
   ${chainHtml(game, true)}
   ${game.free && game.steps.length >= 2 ? '<button class="btn primary block" id="btnFinish">Kette abschließen</button>' : ''}
   ${game.steps.length ? '<button class="btn ghost block" id="btnLinksGame">Linkliste der bisherigen Songs</button>' : ''}
+  ${game.kind === 'party' ? '<button class="btn ghost block" id="btnGiveUp">Aufgeben (0 Punkte)</button>' : ''}
   <div class="panel">
     <span class="eyebrow">${game.free && !game.steps.length ? 'Erster Song' : 'Nächster Song'}</span>
     <div class="seg" role="tablist">
@@ -1225,6 +1526,7 @@ function bindGame(){
   $('#btnHint').onclick = openHints;
   if($('#btnLinksGame')) $('#btnLinksGame').onclick = () => openLinkList(game, { finished:false });
   if($('#btnFinish')) $('#btnFinish').onclick = openFinishSheet;
+  if($('#btnGiveUp')) $('#btnGiveUp').onclick = giveUpParty;
   $$('[data-mode]').forEach(b => b.onclick = () => songMode(b.dataset.mode));
   const ta = $('#spIn');
   ta.oninput = () => { linkInput = ta.value; };
@@ -1283,7 +1585,17 @@ function updateResults(){
   r.innerHTML = resultsHtml(); bindResults();
   const m = $('#btnMore'); if(m) m.hidden = !moreVisible();
 }
-function tick(){ const c = $('#clock'); if(c && game) c.textContent = fmtTime(Date.now() - game.startedAt); }
+function tick(){
+  if(!game) return;
+  const c = $('#clock'), el = Date.now() - game.startedAt;
+  if(game.timeLimit && !game.timeUp){
+    const left = game.timeLimit - el;
+    if(left <= 0){ game.timeUp = true; LS.set('game', game); toast('Zeit abgelaufen. Du kannst weiterspielen, die Kette bringt aber 0 Punkte.'); render(); return; }
+    if(c) c.textContent = fmtTime(left);
+    return;
+  }
+  if(c) c.textContent = game.timeUp ? 'abgelaufen' : fmtTime(el);
+}
 
 /* ---------- Tipps ---------- */
 function hintOpts(){ return { bandLinks:settings().bandLinks, usedRecs:new Set(game.steps.map(s => s.rec.id).filter(Boolean)) }; }
@@ -1502,34 +1814,60 @@ function openLinkList(g, opts = {}){
 }
 
 /* ---------- Ergebnis ---------- */
+function scorePanel(a){
+  const sc = a.score;
+  return `<div class="panel"><div class="rankrow"><span class="eyebrow">Punkte</span><b class="pts">${sc.counted ? '+' : ''}${sc.total}</b></div>
+    <div class="scorelines">${sc.lines.map(([l, v]) => `<div><span>${esc(l)}</span><b>${v > 0 ? '+' : ''}${v}</b></div>`).join('')}</div>
+    ${a.rankUp ? `<div class="verdict ok">Aufgestiegen: ${esc(a.rankUp.to)}</div>` : ''}
+    ${a.newBadges.length ? `<div class="chips">${a.newBadges.map(id => `<span class="chip on">${esc(BADGES.find(b => b[0] === id)[1])}</span>`).join('')}</div>` : ''}</div>`;
+}
 function resultView(){
-  const claims = game.steps.filter(x => x.link.type === 'claim').length;
+  const claims = game.steps.filter(x => x.link.type === 'claim').length, n = game.steps.length;
+  const a = game.award || award();
+  if(game.kind === 'party'){
+    return `<div class="hero"><span class="eyebrow">${esc(game.teamName || 'Team')} ist fertig</span><h1>${esc(game.ch.start.name)} → ${esc(game.ch.target.name)}</h1>
+      <div class="big">${n}</div><span class="muted">Songs · ${fmtTime(game.finishedAt - game.startedAt)}${game.par ? ` · Par ${game.par}: ${parWord(n, game.par)}` : ''}</span></div>
+      ${scorePanel(a)}
+      <details class="panel"><summary>Kette ansehen (erst, wenn alle fertig sind)</summary>${chainHtml(game, false)}</details>
+      <button class="btn primary block" id="btnPartyNext">Weiter</button>`;
+  }
+  const pk = game.kind === 'pack' ? PACKS.find(x => x.id === game.pack) : null;
   return `
   <div class="hero">
-    <span class="eyebrow">${game.solved ? 'Von der App gelöst' : 'Aufgabe erfüllt'}</span>
+    <span class="eyebrow">${game.solved ? 'Von der App gelöst' : game.kind === 'daily' ? 'Tageskette ' + fmtDay(game.day) : pk ? pk.name : 'Aufgabe erfüllt'}</span>
     <h1>${esc(game.ch.start.name)} → ${esc(game.ch.target.name)}</h1>
-    <div class="big">${game.steps.length}</div>
+    <div class="big">${n}</div>
     <span class="muted">Songs · ${fmtTime(game.finishedAt - game.startedAt)}${game.hints ? ` · ${game.hints} Tipp${game.hints === 1 ? '' : 's'}` : ''}</span>
   </div>
-  ${game.best && !game.solved ? `<div class="verdict ${game.steps.length < game.best ? 'ok' : game.steps.length === game.best ? 'claim' : 'bad'}">${game.steps.length < game.best ? `Rekord geschlagen: ${game.best - game.steps.length} Song${game.best - game.steps.length === 1 ? '' : 's'} weniger als die Vorgabe von ${game.best}` : game.steps.length === game.best ? `Gleichstand mit der Vorgabe von ${game.best} Songs` : `Vorgabe von ${game.best} Songs nicht geschafft`}</div>` : ''}
-  <div class="verdict ${claims ? 'claim' : 'ok'}">${claims ? `${claims} von ${game.steps.length} Gliedern sind nicht in MusicBrainz belegt` : 'Alle Glieder sind in MusicBrainz belegt'}</div>
+  ${game.par && !game.solved ? `<div class="verdict ${n <= game.par ? 'ok' : 'claim'}">Par ${game.par}: ${parWord(n, game.par)}</div>` : ''}
+  ${a.duel ? `<div class="verdict ${a.duel === 'win' ? 'ok' : a.duel === 'tie' ? 'claim' : 'bad'}">${a.duel === 'win' ? `Duell gewonnen gegen ${esc(game.duel.name)}` : a.duel === 'tie' ? `Unentschieden gegen ${esc(game.duel.name)}` : `${esc(game.duel.name)} bleibt vorn: ${game.duel.songs} Songs in ${fmtTime(game.duel.secs * 1000)}`}</div>`
+    : game.best && !game.solved ? `<div class="verdict ${n < game.best ? 'ok' : n === game.best ? 'claim' : 'bad'}">${n < game.best ? `Rekord geschlagen: ${game.best - n} Song${game.best - n === 1 ? '' : 's'} weniger als die Vorgabe von ${game.best}` : n === game.best ? `Gleichstand mit der Vorgabe von ${game.best} Songs` : `Vorgabe von ${game.best} Songs nicht geschafft`}</div>` : ''}
+  ${scorePanel(a)}
+  <div class="verdict ${claims ? 'claim' : 'ok'}">${claims ? `${claims} von ${n} Gliedern sind nicht in MusicBrainz belegt` : 'Alle Glieder sind in MusicBrainz belegt'}</div>
   ${chainHtml(game, false)}
   <div class="panel">
-    <button class="btn primary block" id="btnShare">Ergebnis mit Prüf-Link teilen</button>
+    ${game.kind === 'daily' ? '<button class="btn primary block" id="btnDailyShare">Tagesergebnis teilen (ohne Lösung)</button>' : ''}
+    ${pk && game.idx + 1 < pk.list.length ? '<button class="btn primary block" id="btnPackNext">Nächste Aufgabe im Paket</button>' : ''}
+    <button class="btn ${game.kind === 'daily' || pk ? '' : 'primary'} block" id="btnShare">Ergebnis mit Prüf-Link teilen</button>
+    ${!game.solved && !game.timeUp && !game.free ? '<button class="btn block" id="btnDuel">Zum Duell herausfordern</button>' : ''}
     <button class="btn block" id="btnChallenge">Als Challenge verschicken</button>
     <button class="btn block" id="btnLinks">Linkliste erstellen</button>
-    <div class="row"><button class="btn ghost" id="btnUndo2">Letzten Song zurück</button><button class="btn ghost" id="btnNew">Neue Challenge</button></div>
+    <div class="row"><button class="btn ghost" id="btnUndo2">Letzten Song zurück</button><button class="btn ghost" id="btnNew">Zur Übersicht</button></div>
   </div>`;
 }
 function bindResult(){
+  if(game.kind === 'party'){ $('#btnPartyNext').onclick = () => { game = null; LS.del('game'); view = 'party'; render(); }; return; }
   $('#btnShare').onclick = () => shareText(resultText());
   $('#btnLinks').onclick = () => openLinkList(game, { finished:true, code:chainCode(game) });
   $('#btnChallenge').onclick = () => {
     const best = game.best ? Math.min(game.best, game.steps.length) : game.steps.length;
     shareChallenge(game.ch.start, game.ch.target, best);
   };
+  if($('#btnDuel')) $('#btnDuel').onclick = () => shareChallenge(game.ch.start, game.ch.target, game.steps.length, { secs:Math.round((game.finishedAt - game.startedAt) / 1000), name:settings().name || 'Jemand' });
+  if($('#btnDailyShare')) $('#btnDailyShare').onclick = () => shareText(dailyShareText());
+  if($('#btnPackNext')) $('#btnPackNext').onclick = () => startPack(game.pack, game.idx + 1);
   $('#btnUndo2').onclick = undo;
-  $('#btnNew').onclick = () => { game = null; LS.del('game'); draft = { start:null, target:null }; view = 'home'; render(); };
+  $('#btnNew').onclick = () => { game = null; LS.del('game'); draft = { start:null, target:null, best:null }; view = 'home'; render(); };
 }
 function linkPlain(l){
   if(l.type === 'band' || l.type === 'colleague') return '↳ ' + l.text;
@@ -1537,7 +1875,8 @@ function linkPlain(l){
   return '';
 }
 function resultText(){
-  const lines = [`🎸 ${game.solved ? 'Von der App gelöst' : 'Aufgabe erfüllt'}: ${game.ch.start.name} → ${game.ch.target.name}`, `${game.steps.length} Songs in ${fmtTime(game.finishedAt - game.startedAt)}${game.hints ? ` (${game.hints} Tipp${game.hints === 1 ? '' : 's'} genutzt)` : ''}`, ''];
+  const pts = game.award ? game.award.score.total : 0;
+  const lines = [`🎸 ${game.solved ? 'Von der App gelöst' : 'Aufgabe erfüllt'}: ${game.ch.start.name} → ${game.ch.target.name}`, `${game.steps.length} Songs in ${fmtTime(game.finishedAt - game.startedAt)}${game.par ? ` · Par ${game.par}` : ''}${game.hints ? ` (${game.hints} Tipp${game.hints === 1 ? '' : 's'} genutzt)` : ''} · ${pts} Punkte`, ''];
   game.steps.forEach((st, i) => { const lp = linkPlain(st.link); if(lp) lines.push('   ' + lp); lines.push(`${i + 1}. ${st.rec.title} – ${st.rec.credit}`); });
   lines.push('', 'Prüfen: ' + BASE + '#k=' + chainCode(game));
   return lines.join('\n');
@@ -1615,21 +1954,130 @@ async function shareText(t){
   if(navigator.share){ try{ await navigator.share({ text:t }); return; }catch(e){ if(e.name === 'AbortError') return; } }
   copyText(t);
 }
-function shareChallenge(a, b, best){
-  const goal = best ? `Meine Kette hat ${best} Songs. Wer schafft es mit weniger?` : 'Wer schafft es mit den wenigsten Songs?';
-  shareText(`Neue Band-Kette: ${a.name} → ${b.name}\n${goal}\n${BASE}#c=${a.id}.${b.id}${best ? '.' + best : ''}`);
+function shareChallenge(a, b, best, duel){
+  const goal = duel ? `${duel.name} hat es in ${best} Songs und ${fmtTime(duel.secs * 1000)} geschafft. Schlägst du das?` : best ? `Meine Kette hat ${best} Songs. Wer schafft es mit weniger?` : 'Wer schafft es mit den wenigsten Songs?';
+  const tail = duel ? `.${best}~${duel.secs}~${encodeURIComponent(duel.name).replace(/\./g, '%2E')}` : best ? '.' + best : '';
+  shareText(`${duel ? 'Duell' : 'Neue Band-Kette'}: ${a.name} → ${b.name}\n${goal}\n${BASE}#c=${a.id}.${b.id}${tail}`);
 }
 async function readHash(){
   const h = location.hash;
-  const k = h.match(/^#k=(.+)$/), c = h.match(/^#c=([0-9a-f-]{36})\.([0-9a-f-]{36})(?:\.(\d{1,3}))?$/);
-  if(k || c) history.replaceState(null, '', BASE);
+  const k = h.match(/^#k=(.+)$/), c = h.match(/^#c=([0-9a-f-]{36})\.([0-9a-f-]{36})(?:\.(\d{1,3})(?:~(\d{1,6})~([^~]{1,80}))?)?$/), d = h.match(/^#d=(\d{4}-\d{2}-\d{2})$/);
+  if(k || c || d) history.replaceState(null, '', BASE);
+  if(d && d[1] <= dayKey()){ setTimeout(() => guardRunning(() => startDaily(d[1])), 0); return false; }
   if(k){ startVerify(decodeURIComponent(k[1])); return true; }
   if(c){
     toast('Challenge wird geladen …');
-    try{ const a = await artistInfo(c[1], 'high'); const b = await artistInfo(c[2], 'high'); draft.start = artistPick(a); draft.target = artistPick(b); draft.best = c[3] ? +c[3] : null; view = 'home'; render(); }
+    try{ const a = await artistInfo(c[1], 'high'); const b = await artistInfo(c[2], 'high'); draft.start = artistPick(a); draft.target = artistPick(b); draft.best = c[3] ? +c[3] : null;
+      let nm = ''; try{ nm = c[5] ? decodeURIComponent(c[5]).slice(0, 20) : ''; }catch(e){}
+      draft.duel = c[4] && nm ? { songs:+c[3], secs:+c[4], name:nm } : null; view = 'home'; render(); }
     catch(e){ handleErr(e); }
   }
   return false;
+}
+
+/* ---------- Spielerprofil, Pakete, Archiv, Party ---------- */
+const BACK = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M15 18l-6-6 6-6"/></svg>`;
+function backBar(title){ return `<div class="top"><button class="iconbtn" id="btnBack" aria-label="Zur Übersicht">${BACK}</button><h2 style="flex:1">${title}</h2></div>`; }
+function bindBack(){ $('#btnBack').onclick = () => { view = 'home'; render(); }; }
+function rankBar(p){
+  const r = rankOf(p.points), pct = r.nextAt ? Math.min(100, Math.round((p.points - r.at) / (r.nextAt - r.at) * 100)) : 100;
+  return `<div class="rankbar"><div class="rankrow"><b>${esc(r.name)}</b><span class="muted small">${p.points.toLocaleString('de-DE')} Punkte${r.next ? ` · noch ${(r.nextAt - p.points).toLocaleString('de-DE')} bis ${esc(r.next)}` : ''}</span></div>
+    <div class="meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><span style="width:${pct}%"></span></div></div>`;
+}
+function profileView(){
+  const p = profile(), st = streakNow(p), atlas = Object.entries(p.atlas).sort((x, y) => y[1][1] - x[1][1]);
+  const dailies = Object.values(p.daily).filter(d => !d.solved), parHits = dailies.filter(d => d.n <= d.par).length;
+  return backBar('Dein Profil') + `
+  <div class="panel">${rankBar(p)}
+    <div class="statgrid">
+      <div><b>${st}</b><span>Serie${p.streak.joker === weekOf(dayKey()) ? ' (Joker genutzt)' : ''}</span></div>
+      <div><b>${p.streak.best}</b><span>Beste Serie</span></div>
+      <div><b>${p.games}</b><span>Gelöste Ketten</span></div>
+      <div><b>${dailies.length}</b><span>Tagesketten</span></div>
+      <div><b>${parHits}</b><span>Par oder besser</span></div>
+      <div><b>${p.duelsWon}</b><span>Duelle gewonnen</span></div>
+    </div>
+    <p class="muted small">Punkte gibt es für selbst gelöste Ketten. Von der App gelöste Ketten zählen 0 Punkte.</p>
+  </div>
+  <div class="panel"><span class="eyebrow">Abzeichen ${Object.keys(p.badges).length} von ${BADGES.length}</span>
+    <div class="badges">${BADGES.map(([id, name, desc]) => `<div class="badge ${p.badges[id] ? 'on' : ''}"><b>${esc(name)}</b><span>${esc(desc)}</span>${p.badges[id] ? `<span class="when">${fmtDay(p.badges[id])}</span>` : ''}</div>`).join('')}</div>
+  </div>
+  <div class="panel"><span class="eyebrow">Musikatlas: ${atlas.length} Künstler</span>
+    ${atlas.length ? `<input type="search" id="atlasQ" placeholder="Künstler im Atlas suchen" autocomplete="off">
+    <div class="list" id="atlasList">${atlasRows(atlas, '')}</div>` : '<p class="muted small">Jeder Künstler, der in einer selbst gelösten Kette vorkommt, landet hier.</p>'}
+  </div>`;
+}
+function atlasRows(atlas, q){
+  const l = q ? atlas.filter(([, v]) => v[0].toLowerCase().includes(q.toLowerCase())) : atlas;
+  return l.slice(0, 50).map(([id, v]) => `<a class="item" href="https://musicbrainz.org/artist/${esc(id)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none"><div class="txt"><div class="t1">${esc(v[0])}</div></div><span class="tag">${v[1]}×</span></a>`).join('') || '<p class="muted small">Nichts gefunden</p>';
+}
+function bindProfile(){
+  bindBack();
+  const q = $('#atlasQ');
+  if(q){ const atlas = Object.entries(profile().atlas).sort((x, y) => y[1][1] - x[1][1]); q.oninput = () => { $('#atlasList').innerHTML = atlasRows(atlas, q.value.trim()); }; }
+}
+function packsView(){
+  const p = profile();
+  return backBar('Themenpakete') + PACKS.map(pk => {
+    const done = p.packs[pk.id] || [];
+    return `<div class="panel"><div class="rankrow"><h3>${esc(pk.name)}</h3><span class="tag ${done.length >= pk.list.length ? 'ok' : ''}">${done.length} von ${pk.list.length}</span></div>
+      <span class="muted small">${esc(pk.desc)}</span>
+      <div class="list">${pk.list.map(([a, b], i) => `<button class="item" data-pack="${pk.id}" data-idx="${i}"><div class="txt"><div class="t1">${esc(a)} → ${esc(b)}</div></div><span class="tag ${done.includes(i) ? 'ok' : ''}">${done.includes(i) ? 'gelöst' : 'Spielen'}</span></button>`).join('')}</div></div>`;
+  }).join('');
+}
+function bindPacks(){
+  bindBack();
+  $$('[data-pack]').forEach(b => b.onclick = () => { if(game && !game.won && game.steps.length){ toast('Erst die laufende Kette beenden oder verwerfen'); return; } b.querySelector('.tag').textContent = 'Lädt …'; startPack(b.dataset.pack, +b.dataset.idx); });
+}
+function openArchive(){
+  const p = profile(), today = dayKey();
+  const days = Array.from({ length:14 }, (_, i) => addDays(today, -i));
+  sheet(`<h2>Archiv</h2><p class="muted small">Frühere Tagesketten nachspielen. Punkte gibt es, wenn du den Tag noch nicht gespielt hast; die Serie zählt nur am Tag selbst.</p>
+    <div class="list">${days.map(k => { const d = p.daily[k]; return `<button class="item" data-day="${k}"><div class="txt"><div class="t1">${WEEKDAY[dayDate(k).getDay()]}, ${fmtDay(k)}</div><div class="t2">${d ? (d.solved ? 'von der App gelöst' : `${d.n} Songs bei Par ${d.par} · ${parWord(d.n, d.par)}`) : 'noch offen'}</div></div><span class="tag ${d && !d.solved ? 'ok' : ''}">${d ? 'gespielt' : 'Spielen'}</span></button>`; }).join('')}</div>
+    <button class="btn ghost" data-close>Schließen</button>`);
+  $$('[data-day]').forEach(b => b.onclick = () => { closeSheet(); startDaily(b.dataset.day); });
+}
+function partyView(){
+  const party = LS.get('party', null);
+  if(!party){
+    return backBar('Party-Modus') + `
+    <div class="panel"><p class="muted small">Alle Teams spielen nacheinander dieselbe Aufgabe auf diesem Handy. Gewertet wird mit Par und Punkten; wer aufgibt oder die App lösen lässt, bekommt 0 Punkte.</p>
+      <span class="eyebrow">Aufgabe</span>
+      <div class="vs">${pickBox('start', draft.start)}<span class="arrow">→</span>${pickBox('target', draft.target)}</div>
+      <button class="btn ghost" id="pRandom">Zufällige Bands</button>
+      <label>Teams, eins pro Zeile<textarea id="pTeams" rows="4" autocomplete="off">Team 1\nTeam 2</textarea></label>
+      <label>Zeitlimit pro Team<select id="pTime"><option value="0">ohne</option><option value="180">3 Minuten</option><option value="300" selected>5 Minuten</option></select></label>
+      <button class="btn primary" id="pStart" ${draft.start && draft.target ? '' : 'disabled'}>Party starten</button></div>`;
+  }
+  const done = party.cur >= party.teams.length;
+  const ranked = party.teams.map((t, i) => ({ ...t, i })).sort((x, y) => !x.res - !y.res || (y.res ? y.res.points : 0) - (x.res ? x.res.points : 0) || (x.res ? x.res.ms : 0) - (y.res ? y.res.ms : 0));
+  return backBar('Party-Modus') + `
+  <div class="panel"><span class="eyebrow">Aufgabe</span><h3>${esc(party.ch.start.name)} → ${esc(party.ch.target.name)}</h3>
+    <span class="muted small">${party.par ? `Par ${party.par}` : 'Par unbekannt'}${party.timeLimit ? ` · ${party.timeLimit / 60} Minuten pro Team` : ''}</span>
+    ${done ? '<div class="verdict ok">Alle Teams sind fertig</div>' : `<div class="verdict claim">${esc(party.teams[party.cur].name)} ist dran. Die anderen schauen weg.</div><button class="btn primary" id="pGo">${esc(party.teams[party.cur].name)}: Los geht’s</button>`}
+  </div>
+  <div class="panel"><span class="eyebrow">${done ? 'Endstand' : 'Zwischenstand'}</span><div class="list">${ranked.map((t, pos) => `<div class="item"><span class="num">${t.res ? pos + 1 : '–'}</span><div class="txt"><div class="t1">${esc(t.name)}</div><div class="t2">${t.res ? (t.res.gaveUp ? 'aufgegeben' : t.res.solved ? 'von der App gelöst' : `${t.res.n} Songs · ${fmtTime(t.res.ms)}${t.res.hints ? ` · ${t.res.hints} Tipps` : ''}`) : 'noch nicht gespielt'}</div></div>${t.res ? `<span class="tag ${t.res.points ? 'ok' : ''}">${t.res.points} P.</span>` : ''}${done && t.res && t.res.code ? `<button class="btn ghost" data-pcode="${t.i}" style="min-height:36px;padding:6px 10px">Kette</button>` : ''}</div>`).join('')}</div>
+  </div>
+  <button class="btn ghost block" id="pReset">${done ? 'Neue Party' : 'Party abbrechen'}</button>`;
+}
+function bindParty(){
+  bindBack();
+  const party = LS.get('party', null);
+  if(!party){
+    $$('[data-pick]').forEach(b => b.onclick = () => openArtistSheet(b.dataset.pick));
+    $('#pRandom').onclick = async () => { await randomChallenge(); view = 'party'; render(); };
+    $('#pStart').onclick = async () => {
+      const teams = $('#pTeams').value.split('\n').map(s => s.trim()).filter(Boolean).slice(0, 8);
+      if(teams.length < 2){ toast('Mindestens zwei Teams eintragen'); return; }
+      let par = null; try{ await loadGraph(); par = parFor(draft.start, draft.target); }catch(e){}
+      LS.set('party', { ch:{ start:draft.start, target:draft.target }, par, timeLimit:(+$('#pTime').value || 0) * 1000, teams:teams.map(name => ({ name, res:null })), cur:0 });
+      render();
+    };
+    return;
+  }
+  if($('#pGo')) $('#pGo').onclick = () => newGame(party.ch.start, party.ch.target, null, { kind:'party', team:party.cur, teamName:party.teams[party.cur].name, par:party.par, timeLimit:party.timeLimit || null });
+  $$('[data-pcode]').forEach(b => b.onclick = () => startVerify(party.teams[+b.dataset.pcode].res.code));
+  $('#pReset').onclick = () => { LS.del('party'); if(game && game.kind === 'party'){ game = null; LS.del('game'); } render(); };
 }
 
 /* ---------- Sheets ---------- */
@@ -1652,13 +2100,14 @@ function openArtistSheet(which){
     try{
       list = await searchArtists(q);
       $('#ares').innerHTML = list.map((a, i) => `<button class="item" data-a="${i}"><div class="txt"><div class="t1">${esc(a.name)}</div><div class="t2">${esc(artistMeta(a)) || '&nbsp;'}</div></div></button>`).join('') || '<p class="muted small">Nichts gefunden</p>';
-      $$('[data-a]').forEach(b => b.onclick = () => { draft[which] = list[+b.dataset.a]; draft.best = null; closeSheet(); render(); });
+      $$('[data-a]').forEach(b => b.onclick = () => { draft[which] = list[+b.dataset.a]; draft.best = null; draft.duel = null; closeSheet(); render(); });
     }catch(e){ handleErr(e); }
   }, 600); };
 }
 function openSettings(){
   const s = settings();
   sheet(`<h2>Spielregeln</h2>
+    <label>Dein Spielername (für Duelle)<input type="text" id="sName" maxlength="20" autocomplete="nickname" value="${esc(s.name || '')}"></label>
     <label class="toggle"><span>Band-Links erlauben<small>Ein Künstler ist oder war Mitglied der anderen Band, laut MusicBrainz.</small></span><input type="checkbox" id="sBand" ${s.bandLinks ? 'checked' : ''}></label>
     <label class="toggle"><span>Bandkollegen zählen<small>Zwei Künstler spielten in derselben Band, z. B. zwei Ex-Mitglieder.</small></span><input type="checkbox" id="sCol" ${s.colleagues ? 'checked' : ''}></label>
     <label class="toggle"><span>Unbelegte Glieder erlauben<small>Die Gruppe darf fehlende Einträge bestätigen. Sie werden markiert.</small></span><input type="checkbox" id="sClaim" ${s.claims ? 'checked' : ''}></label>
@@ -1676,7 +2125,7 @@ function openSettings(){
   });
   $('#netClear').onclick = () => { overlay = { nodes:{}, edges:[] }; overlaySeen.clear(); LS.del('overlay'); graph = null; graphLoading = null; toast('Ergänzungen gelöscht'); closeSheet(); };
   $('#sSave').onclick = () => {
-    LS.set('settings', { maxSongs:Math.max(0, parseInt($('#sMax').value, 10) || 0), bandLinks:$('#sBand').checked,
+    LS.set('settings', { name:$('#sName').value.trim().slice(0, 20), maxSongs:Math.max(0, parseInt($('#sMax').value, 10) || 0), bandLinks:$('#sBand').checked,
       colleagues:$('#sCol').checked, claims:$('#sClaim').checked, hints:$('#sHint').checked });
     closeSheet(); toast('Gespeichert'); render();
   };
