@@ -183,6 +183,50 @@ body.hasplayer.hasembed #app{padding-bottom:300px}
 #spHost iframe{display:block;width:100%;border:0;border-radius:12px}
 #plUi{display:flex;flex-direction:column;gap:6px}
 body.hasplayer .toast{bottom:calc(220px + env(safe-area-inset-bottom,0px))}
+
+/* ---- Bedienung, Überarbeitung ---- */
+.me{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:12px;background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:8px 14px;color:var(--fg);text-align:left}
+.mename{display:flex;flex-direction:column;line-height:1.15}
+.mename b{font-family:var(--f-display);font-size:15px}
+.mename span{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+.me .meter{height:6px;background:var(--bg)}
+.streak{display:inline-flex;align-items:center;gap:4px;font:700 14px var(--f-mono);color:var(--muted)}
+.streak.on{color:var(--accent)}
+.intro{border-color:var(--accent)}
+.howto{margin:0;padding:0;list-style:none;counter-reset:st;display:flex;flex-direction:column;gap:12px}
+.howto li{counter-increment:st;display:grid;grid-template-columns:30px 1fr;column-gap:10px;align-items:start}
+.howto li::before{content:counter(st);grid-row:span 2;width:28px;height:28px;border-radius:50%;background:var(--accent);color:var(--accent-ink);display:grid;place-items:center;font:800 14px var(--f-display)}
+.howto b{font-size:15px}
+.howto span{font-size:13px;color:var(--muted)}
+.example{display:flex;flex-direction:column;gap:2px;background:var(--bg);border-radius:12px;padding:12px 14px;font-size:13px}
+.example span{font-weight:600}
+.example i{font-style:normal;color:var(--ok);font:500 12px var(--f-mono);padding-left:12px;border-left:2px solid var(--ok);margin-left:4px}
+.resume{border-color:var(--accent)}
+.vs{grid-template-columns:1fr 40px 1fr}
+.swap{align-self:center;width:40px;height:40px;border-radius:50%;border:1px solid var(--line);background:var(--surface2);display:grid;place-items:center;color:var(--accent)}
+.swap:disabled{opacity:.35}
+.pick{cursor:pointer;color:var(--fg)}
+.addband{color:var(--accent);font-weight:600}
+.iconlink{display:inline-flex;align-items:center;gap:6px;font-weight:600}
+.btn.primary:disabled{background:var(--surface2);color:var(--muted);opacity:1}
+.row.minor>.btn{min-height:40px;padding:9px 12px;font-size:13px}
+.btn.small{min-height:36px;padding:7px 12px;font-size:13px}
+.tiles{gap:10px}
+.tile{padding:14px;gap:4px;align-items:flex-start;min-height:118px}
+.tile svg{color:var(--accent);margin-bottom:4px}
+.tile b{font-size:16px}
+.toolbtn{display:flex;flex-direction:column;align-items:center;gap:2px;background:var(--surface);border:1px solid var(--line);border-radius:12px;min-width:52px;padding:6px 8px;font-size:11px;color:var(--fg);flex:none}
+.toolbtn:disabled{opacity:.4}
+.nextpanel h3{font-size:18px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.grid2 .btn{min-height:44px;padding:10px;font-size:14px}
+.actions{gap:10px}
+.toggle input[type=checkbox]{appearance:none;-webkit-appearance:none;width:46px;height:28px;border-radius:999px;background:var(--surface2);border:1px solid var(--line);position:relative;cursor:pointer;transition:background .15s;margin:0}
+.toggle input[type=checkbox]::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:var(--muted);transition:transform .15s,background .15s}
+.toggle input[type=checkbox]:checked{background:var(--accent);border-color:var(--accent)}
+.toggle input[type=checkbox]:checked::after{transform:translateX(18px);background:var(--accent-ink)}
+.routeline{font-size:22px;line-height:1.15;overflow-wrap:anywhere}
+.routeline .arrow{font-size:18px}
 </style>
 </head>
 <body>
@@ -1766,54 +1810,73 @@ function render(){
 function pickBox(which, a){
   return `<button class="pick ${a ? 'set' : ''}" data-pick="${which}">
     <span class="eyebrow">${which === 'start' ? 'Startband' : 'Zielband'}</span>
-    ${a ? `<b>${esc(a.name)}</b><span class="muted small">${esc(artistMeta(a))}</span>` : `<span class="muted">Antippen zum Suchen</span>`}</button>`;
+    ${a ? `<b>${esc(a.name)}</b><span class="muted small">${esc(artistMeta(a))}</span>` : `<span class="addband">+ Band wählen</span>`}</button>`;
 }
 const USER = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>`;
+const ICON = {
+  dice:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="3"/><circle cx="9" cy="9" r="1.3" fill="currentColor"/><circle cx="15" cy="15" r="1.3" fill="currentColor"/><circle cx="15" cy="9" r="1.3" fill="currentColor"/><circle cx="9" cy="15" r="1.3" fill="currentColor"/></svg>',
+  swap:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M7 7h11l-3-3M17 17H6l3 3"/></svg>',
+  help:'<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .8-1 1.5V14"/><circle cx="12" cy="17.2" r=".6" fill="currentColor"/></svg>',
+  pack:'<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7l8-4 8 4-8 4z"/><path d="M4 7v10l8 4 8-4V7"/><path d="M12 11v10"/></svg>',
+  party:'<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="8" r="3"/><circle cx="17" cy="9" r="2.5"/><path d="M2.5 20c.8-3.4 3-5 5.5-5s4.7 1.6 5.5 5M14 15.3c.9-.5 1.9-.8 3-.8 2.2 0 4 1.4 4.6 4.5"/></svg>',
+  free:'<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="12" r="2.5"/><circle cx="7" cy="18" r="2.5"/><path d="M8.3 7.2l7.4 3.6M15.7 13.2l-6.4 3.6"/></svg>',
+  check:'<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l7 3v6c0 4.5-3 7.6-7 9-4-1.4-7-4.5-7-9V6z"/><path d="M8.5 12l2.5 2.5 4.5-5"/></svg>',
+  flame:'<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c1 4 5 5.5 5 11a5 5 0 0 1-10 0c0-2.4 1.2-3.8 2.3-5 .2 1.6 1 2.6 2 3 0-3.2-1-6 .7-9z"/></svg>'
+};
+const HOWTO = `<ol class="howto">
+    <li><b>Start und Ziel</b><span>Zwei Bands, z. B. Volbeat und Foo Fighters.</span></li>
+    <li><b>Song an Song hängen</b><span>Jeder Song muss einen Künstler mit dem vorigen teilen, als Feature oder gemeinsamer Song. Mit Band-Links zählt auch ein Bandmitglied.</span></li>
+    <li><b>Ankommen</b><span>Sobald ein Song die Zielband enthält, ist die Kette fertig. Weniger Songs bringen mehr Punkte.</span></li>
+  </ol>
+  <div class="example"><span>Volbeat</span><i>Black Rose feat. Danko Jones</i><span>Danko Jones</span><i>From Can to Can’t mit Dave Grohl</i><span>Dave Grohl</span><i>ist bei Foo Fighters</i><span>Foo Fighters</span></div>`;
+function openHelp(){ sheet(`<h2>So geht’s</h2>${HOWTO}<p class="muted small">Jede Verbindung prüft die App in MusicBrainz, der offenen Musikdatenbank. Deshalb kann jeder in der Gruppe nachvollziehen, dass die Kette stimmt.</p><button class="btn primary" data-close>Verstanden</button>`); }
 function homeView(){
   const h = LS.get('history', []), p = profile(), st = streakNow(p);
   const running = game && !game.won;
-  const doneDaily = p.daily[dayKey()];
+  const ready = !!(draft.start && draft.target);
+  const r = rankOf(p.points), pct = r.nextAt ? Math.min(100, Math.round((p.points - r.at) / (r.nextAt - r.at) * 100)) : 100;
   const packDone = PACKS.reduce((n, pk) => n + (p.packs[pk.id] || []).length, 0), packAll = PACKS.reduce((n, pk) => n + pk.list.length, 0);
+  const intro = !LS.get('introSeen', false) && !h.length;
   return `
   <div class="top"><div class="logo">${LOGO}<h1>Band-Kette</h1></div>
-    <div style="display:flex;gap:8px"><button class="iconbtn" id="btnProfile" aria-label="Dein Profil">${USER}</button><button class="iconbtn" id="btnSettings" aria-label="Spielregeln und Einstellungen">${GEAR}</button></div></div>
-  <button class="panel profilecard" id="btnProfile2" aria-label="Profil öffnen">${rankBar(p)}<span class="small muted">Serie: <b class="fg">${st} Tag${st === 1 ? '' : 'e'}</b> · Abzeichen: <b class="fg">${Object.keys(p.badges).length}</b> · Musikatlas: <b class="fg">${Object.keys(p.atlas).length}</b></span></button>
-  <div class="panel dailycard"><div class="rankrow"><span class="eyebrow">Tageskette · ${WEEKDAY[new Date().getDay()]}, ${fmtDay(dayKey())}</span><button class="linkbtn" id="btnArchive">Archiv</button></div>
+    <div style="display:flex;gap:8px"><button class="iconbtn" id="btnHelp" aria-label="So geht’s">${ICON.help}</button><button class="iconbtn" id="btnProfile" aria-label="Dein Profil">${USER}</button><button class="iconbtn" id="btnSettings" aria-label="Einstellungen">${GEAR}</button></div></div>
+  <button class="me" id="btnProfile2" aria-label="Profil öffnen">
+    <span class="mename"><b>${esc(r.name)}</b><span>${p.points.toLocaleString('de-DE')} Punkte</span></span>
+    <span class="meter"><span style="width:${pct}%"></span></span>
+    <span class="streak ${st ? 'on' : ''}">${ICON.flame}${st}</span>
+  </button>
+  ${intro ? `<div class="panel intro"><div class="rankrow"><h2>So geht’s</h2><button class="linkbtn" id="introClose">Ausblenden</button></div>${HOWTO}</div>` : ''}
+  ${running ? `<div class="panel resume"><span class="eyebrow">${game.free ? 'Freie Kette in Arbeit' : game.kind === 'daily' ? 'Tageskette läuft' : game.kind === 'party' ? 'Party-Runde läuft' : 'Deine Kette läuft'}</span>
+    <h2>${game.free ? 'Freie Kette' : esc(game.ch.start.name) + ' <span class="arrow">→</span> ' + esc(game.ch.target.name)}</h2>
+    <span class="muted small">${game.steps.length} Song${game.steps.length === 1 ? '' : 's'} bisher</span>
+    <div class="row"><button class="btn primary" id="btnResume">Weiterspielen</button><button class="btn ghost" id="btnAbort">Verwerfen</button></div></div>` : ''}
+  <div class="panel dailycard"><div class="rankrow"><span class="eyebrow">Tageskette · ${WEEKDAY[new Date().getDay()]}, ${fmtDay(dayKey())}</span><button class="linkbtn" id="btnArchive">Frühere Tage</button></div>
     <div id="dailyBox"><div class="busy"><span class="spin"></span><span>Wird vorbereitet …</span></div></div>
-    ${doneDaily ? '' : '<p class="muted small">Eine Aufgabe für alle. Wer Par trifft, bekommt Bonuspunkte; die Serie wächst jeden Tag.</p>'}
   </div>
-  ${running ? `<div class="panel"><span class="eyebrow">${game.free ? 'Freie Kette in Arbeit' : game.kind === 'daily' ? 'Tageskette läuft' : game.kind === 'party' ? 'Party-Runde läuft' : 'Laufende Challenge'}</span>
-    <h3>${game.free ? 'Freie Kette' : esc(game.ch.start.name) + ' → ' + esc(game.ch.target.name)}</h3>
-    <span class="muted small">${game.steps.length} Songs bisher</span>
-    <div class="row"><button class="btn primary" id="btnResume">Weiterbauen</button><button class="btn ghost" id="btnAbort">Verwerfen</button></div></div>` : ''}
   <div class="panel">
-    <span class="eyebrow">Neue Challenge</span>
-    <div class="vs">${pickBox('start', draft.start)}<span class="arrow">→</span>${pickBox('target', draft.target)}</div>
+    <div class="rankrow"><span class="eyebrow">Eigene Challenge</span><button class="linkbtn iconlink" id="btnRandom">${ICON.dice} Zufällig</button></div>
+    <div class="vs">${pickBox('start', draft.start)}<button class="swap" id="btnSwap" aria-label="Start und Ziel tauschen" ${draft.start || draft.target ? '' : 'disabled'}>${ICON.swap}</button>${pickBox('target', draft.target)}</div>
     ${draft.duel ? `<p class="small">Duell gegen <b>${esc(draft.duel.name)}</b>: ${draft.duel.songs} Songs in ${fmtTime(draft.duel.secs * 1000)}. Weniger Songs gewinnen, bei Gleichstand die Zeit.</p>` : draft.best ? `<p class="small">Zu schlagen: <b>${draft.best} Songs</b></p>` : ''}
-    <label class="check small"><input type="checkbox" id="race" ${draft.race ? 'checked' : ''}> Zeitrennen: 3 Minuten, 5 Bonuspunkte</label>
-    <div class="row">
-      <button class="btn ghost" id="btnRandom">Zufällige Bands</button>
-      <button class="btn primary" id="btnStart" ${draft.start && draft.target ? '' : 'disabled'}>Los geht’s</button>
+    <label class="toggle"><span>Zeitrennen<small>3 Minuten, 5 Bonuspunkte</small></span><input type="checkbox" id="race" ${draft.race ? 'checked' : ''}></label>
+    <button class="btn primary block" id="btnStart" ${ready ? '' : 'disabled'}>${ready ? 'Los geht’s' : 'Erst Start- und Zielband wählen'}</button>
+    <div class="row minor" ${ready ? '' : 'hidden'}>
+      <button class="btn ghost" id="btnShareCh">An die Gruppe schicken</button>
+      <button class="btn ghost" id="btnAutoBuild">Lösung zeigen (0 Punkte)</button>
     </div>
-    <button class="btn ghost block" id="btnShareCh" ${draft.start && draft.target ? '' : 'disabled'}>Challenge an die Gruppe schicken</button>
-    <button class="btn ghost block" id="btnAutoBuild" ${draft.start && draft.target ? '' : 'disabled'}>Kette von der App bauen lassen (0 Punkte)</button>
   </div>
   <div class="tiles">
-    <button class="panel tile" id="btnPacks"><span class="eyebrow">Themenpakete</span><b>${PACKS.length} Pakete</b><span class="muted small">${packDone} von ${packAll} gelöst</span></button>
-    <button class="panel tile" id="btnParty"><span class="eyebrow">Party-Modus</span><b>Teams am Handy</b><span class="muted small">${LS.get('party', null) ? 'Runde läuft' : 'für Abende mit Freunden'}</span></button>
+    <button class="panel tile" id="btnPacks">${ICON.pack}<b>Themenpakete</b><span class="muted small">${packDone} von ${packAll} gelöst</span></button>
+    <button class="panel tile" id="btnParty">${ICON.party}<b>Party-Modus</b><span class="muted small">${LS.get('party', null) ? 'Runde läuft' : 'Teams an einem Handy'}</span></button>
+    <button class="panel tile" id="btnFree">${ICON.free}<b>Freie Kette</b><span class="muted small">Ohne Ziel drauflos verketten</span></button>
+    <button class="panel tile" id="btnVerifyTile" aria-expanded="false">${ICON.check}<b>Kette prüfen</b><span class="muted small">Prüf-Link von Mitspielern</span></button>
   </div>
-  <div class="panel">
-    <span class="eyebrow">Freie Kette</span>
-    <p class="muted small">Ohne festgelegte Bands einfach Song an Song hängen. Beim Abschließen wählst du Start- und Zielband aus dem ersten und letzten Song und kannst die Kette als Challenge verschicken.</p>
-    <button class="btn block" id="btnFree">Freie Kette bauen</button>
-  </div>
-  <div class="panel">
+  <div class="panel" id="verifyBox" hidden>
     <span class="eyebrow">Kette eines Mitspielers prüfen</span>
-    <p class="muted small">Prüf-Link aus WhatsApp hier einfügen. Die App lädt jeden Song neu aus MusicBrainz und kontrolliert jede Verbindung.</p>
+    <p class="muted small">Prüf-Link aus WhatsApp einfügen. Die App lädt jeden Song neu aus MusicBrainz und kontrolliert jede Verbindung.</p>
     <input type="text" id="verifyIn" placeholder="Prüf-Link einfügen" autocomplete="off" autocapitalize="off" spellcheck="false">
-    <button class="btn block" id="btnVerify">Kette prüfen</button>
+    <button class="btn primary block" id="btnVerify">Kette prüfen</button>
   </div>
-  ${h.length ? `<div class="panel"><span class="eyebrow">Deine Ergebnisse</span><div class="list">${h.slice(0, 10).map((x, i) => `
+  ${h.length ? `<div class="panel"><span class="eyebrow">Zuletzt gespielt</span><div class="list">${h.slice(0, 6).map((x, i) => `
     <button class="item" data-hist="${i}"><div class="txt"><div class="t1">${esc(x.s)} → ${esc(x.t)}</div>
     <div class="t2">${new Date(x.at).toLocaleDateString('de-DE')} · ${fmtTime(x.ms)}${x.claims ? ' · ' + x.claims + ' unbelegt' : ''}${x.hints ? ' · ' + x.hints + ' Tipps' : ''}${x.solved ? ' · von der App gelöst' : ''}</div></div>
     <span class="tag ok">${x.n} Songs${x.points !== undefined ? ' · ' + x.points + ' P.' : ''}</span></button>`).join('')}</div></div>` : ''}`;
@@ -1848,6 +1911,10 @@ function bindHome(){
   $('#btnPacks').onclick = () => { view = 'packs'; render(); };
   $('#btnParty').onclick = () => { view = 'party'; render(); };
   $('#btnArchive').onclick = openArchive;
+  $('#btnHelp').onclick = openHelp;
+  if($('#introClose')) $('#introClose').onclick = () => { LS.set('introSeen', true); render(); };
+  $('#btnSwap').onclick = () => { [draft.start, draft.target] = [draft.target, draft.start]; draft.best = null; draft.duel = null; render(); };
+  $('#btnVerifyTile').onclick = () => { const box = $('#verifyBox'); box.hidden = !box.hidden; $('#btnVerifyTile').setAttribute('aria-expanded', String(!box.hidden)); if(!box.hidden){ box.scrollIntoView({ behavior:'smooth', block:'center' }); $('#verifyIn').focus(); } };
   $('#btnVerify').onclick = () => {
     const v = $('#verifyIn').value.trim(); const m = v.match(/#k=([^\s]+)/);
     startVerify(m ? m[1] : v);
@@ -1917,21 +1984,20 @@ function gameView(){
   <div class="gamehead">
     <div class="top">
       <button class="iconbtn" id="btnHome" aria-label="Zur Übersicht"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M15 18l-6-6 6-6"/></svg></button>
-      <div class="route">${game.free ? '<b>Freie Kette</b>' : `<b>${esc(game.ch.start.name)}</b><span class="arrow">→</span><b>${esc(game.ch.target.name)}</b>`}</div>
-      <button class="iconbtn" id="btnHint" aria-label="Tipp anzeigen"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2.1h5c0-.9.4-1.6 1-2.1A6 6 0 0 0 12 3z"/></svg></button>
-      <button class="iconbtn" id="btnUndo" aria-label="Letzten Song entfernen" ${game.steps.length ? '' : 'disabled'}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/></svg></button>
+      <span style="flex:1"></span>
+      <button class="toolbtn" id="btnHint" aria-label="Tipp anzeigen"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2.1h5c0-.9.4-1.6 1-2.1A6 6 0 0 0 12 3z"/></svg><span>Tipp</span></button>
+      <button class="toolbtn" id="btnUndo" aria-label="Letzten Song entfernen" ${game.steps.length ? '' : 'disabled'}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/></svg><span>Zurück</span></button>
     </div>
+    <h2 class="routeline">${game.free ? 'Freie Kette' : `${esc(game.ch.start.name)} <span class="arrow">→</span> ${esc(game.ch.target.name)}`}</h2>
     <div class="stats">${game.kind === 'party' ? `<span>Team <b>${esc(game.teamName || '')}</b></span>` : game.kind === 'daily' ? `<span><b>Tageskette${game.ranked === false ? ' (ohne Wertung)' : ''}</b></span>` : ''}<span>Songs <b>${game.steps.length}${s.maxSongs ? '/' + s.maxSongs : ''}</b></span>${game.par ? `<span>Par <b>${game.par}</b></span>` : ''}${game.duel ? `<span>${esc(game.duel.name)} <b>${game.duel.songs}</b></span>` : game.best ? `<span>Zu schlagen <b>${game.best}</b></span>` : ''}<span>${game.timeLimit && !game.timeUp ? 'Restzeit' : 'Zeit'} <b id="clock">${game.timeUp ? 'abgelaufen' : fmtTime(game.timeLimit ? game.timeLimit - (Date.now() - game.startedAt) : Date.now() - game.startedAt)}</b></span>${claims ? `<span>Unbelegt <b>${claims}</b></span>` : ''}${game.hints ? `<span>Tipps <b>${game.hints}</b></span>` : ''}</div>
   </div>
   ${chainHtml(game, true)}
   ${game.free && game.steps.length >= 2 ? '<button class="btn primary block" id="btnFinish">Kette abschließen</button>' : ''}
-  ${game.steps.length ? '<button class="btn ghost block" id="btnLinksGame">Linkliste der bisherigen Songs</button>' : ''}
-  ${game.kind === 'party' ? '<button class="btn ghost block" id="btnGiveUp">Aufgeben (0 Punkte)</button>' : ''}
-  <div class="panel">
-    <span class="eyebrow">${game.free && !game.steps.length ? 'Erster Song' : 'Nächster Song'}</span>
+  <div class="panel nextpanel">
+    <h3>${game.free && !game.steps.length ? 'Erster Song' : game.steps.length ? 'Nächster Song' : 'Erster Song ab ' + esc(game.ch.start.name)}</h3>
     <div class="seg" role="tablist">
-      <button role="tab" class="${currentMode() === 'search' ? 'on' : ''}" data-mode="search" aria-selected="${currentMode() === 'search'}">In der App suchen</button>
-      <button role="tab" class="${currentMode() === 'link' ? 'on' : ''}" data-mode="link" aria-selected="${currentMode() === 'link'}">Spotify-Link einfügen</button>
+      <button role="tab" class="${currentMode() === 'search' ? 'on' : ''}" data-mode="search" aria-selected="${currentMode() === 'search'}">Song suchen</button>
+      <button role="tab" class="${currentMode() === 'link' ? 'on' : ''}" data-mode="link" aria-selected="${currentMode() === 'link'}">Spotify-Link</button>
     </div>
     <div id="modeLink" ${currentMode() === 'link' ? '' : 'hidden'}>
       <div style="display:flex;flex-direction:column;gap:12px">
@@ -1943,7 +2009,7 @@ function gameView(){
     </div>
     <div id="modeSearch" ${currentMode() === 'search' ? '' : 'hidden'}>
       <div style="display:flex;flex-direction:column;gap:12px">
-        ${a.length ? `<p class="muted small">Der Song muss einen dieser Künstler enthalten${s.bandLinks ? ' oder mit ihm über eine Band verbunden sein' : ''}. Antippen filtert die Suche:</p>
+        ${a.length ? `<p class="small">Der nächste Song braucht einen dieser Künstler${s.bandLinks ? ' oder ein Mitglied ihrer Band' : ''}:</p>
         <div class="chips" id="chips">${chipsHtml()}</div>` : '<p class="muted small">Such nach Titel oder Künstler und tippe den Song an, mit dem deine Kette beginnen soll.</p><div class="chips" id="chips" hidden></div>'}
         <input type="search" id="q" placeholder="${search.chip ? 'Titel oder weiteren Künstler eingrenzen' : 'Songtitel oder Künstler'}" value="${esc(search.q)}" enterkeyhint="search" autocomplete="off">
         <label class="check small"><input type="checkbox" id="collab" ${search.collabOnly ? 'checked' : ''}> Nur Songs mit mehreren Künstlern</label>
@@ -1952,6 +2018,10 @@ function gameView(){
         <button class="btn ghost block" id="btnMore" ${moreVisible() ? '' : 'hidden'}>Mehr laden</button>
       </div>
     </div>
+  </div>
+  <div class="row minor">
+    ${game.steps.length ? '<button class="btn ghost" id="btnLinksGame">Linkliste</button><button class="btn ghost" id="btnPlayGame">▶ Anhören</button>' : ''}
+    ${game.kind === 'party' ? '<button class="btn ghost" id="btnGiveUp">Aufgeben (0 Punkte)</button>' : ''}
   </div>`;
 }
 function chipsHtml(){
@@ -1997,6 +2067,7 @@ function bindGame(){
   $('#btnUndo').onclick = undo;
   $('#btnHint').onclick = openHints;
   if($('#btnLinksGame')) $('#btnLinksGame').onclick = () => openLinkList(game, { finished:false });
+  if($('#btnPlayGame')) $('#btnPlayGame').onclick = () => playChain(game);
   if($('#btnFinish')) $('#btnFinish').onclick = openFinishSheet;
   if($('#btnGiveUp')) $('#btnGiveUp').onclick = giveUpParty;
   $$('[data-mode]').forEach(b => b.onclick = () => songMode(b.dataset.mode));
@@ -2412,19 +2483,22 @@ function resultView(){
   ${a.duel ? `<div class="verdict ${a.duel === 'win' ? 'ok' : a.duel === 'tie' ? 'claim' : 'bad'}">${a.duel === 'win' ? `Duell gewonnen gegen ${esc(game.duel.name)}` : a.duel === 'tie' ? `Unentschieden gegen ${esc(game.duel.name)}` : `${esc(game.duel.name)} bleibt vorn: ${game.duel.songs} Songs in ${fmtTime(game.duel.secs * 1000)}`}</div>`
     : game.best && !game.solved ? `<div class="verdict ${n < game.best ? 'ok' : n === game.best ? 'claim' : 'bad'}">${n < game.best ? `Rekord geschlagen: ${game.best - n} Song${game.best - n === 1 ? '' : 's'} weniger als die Vorgabe von ${game.best}` : n === game.best ? `Gleichstand mit der Vorgabe von ${game.best} Songs` : `Vorgabe von ${game.best} Songs nicht geschafft`}</div>` : ''}
   ${scorePanel(a)}
-  <div class="verdict ${claims ? 'claim' : 'ok'}">${claims ? `${claims} von ${n} Gliedern sind nicht in MusicBrainz belegt` : 'Alle Glieder sind in MusicBrainz belegt'}</div>
-  ${chainHtml(game, false)}
-  ${game.ch.start && game.ch.target ? '<div class="panel"><span class="eyebrow">Andere Wege zum Ziel</span><div id="altList"></div></div>' : ''}
-  <div class="panel">
+  <div class="panel actions">
     ${game.kind === 'daily' ? '<button class="btn primary block" id="btnDailyShare">Tagesergebnis teilen (ohne Lösung)</button>' : ''}
     ${pk && game.idx + 1 < pk.list.length ? '<button class="btn primary block" id="btnPackNext">Nächste Aufgabe im Paket</button>' : ''}
-    <button class="btn ${game.kind === 'daily' || pk ? '' : 'primary'} block" id="btnShare">Ergebnis mit Prüf-Link teilen</button>
-    ${!game.solved && !game.timeUp && !game.free ? '<button class="btn block" id="btnDuel">Zum Duell herausfordern</button>' : ''}
-    <button class="btn block" id="btnChallenge">Als Challenge verschicken</button>
-    <button class="btn block" id="btnPlayChain">▶ Kette anhören</button>
-    <button class="btn block" id="btnLinks">Linkliste erstellen</button>
-    <div class="row"><button class="btn ghost" id="btnUndo2">Letzten Song zurück</button><button class="btn ghost" id="btnNew">Zur Übersicht</button></div>
-  </div>`;
+    <button class="btn ${game.kind === 'daily' || pk ? '' : 'primary'} block" id="btnShare">Ergebnis teilen</button>
+    <div class="grid2">
+      ${!game.solved && !game.timeUp && !game.free ? '<button class="btn" id="btnDuel">Duell starten</button>' : ''}
+      <button class="btn" id="btnChallenge">Als Challenge schicken</button>
+      <button class="btn" id="btnLinks">Linkliste</button>
+      <button class="btn" id="btnNew">Neue Challenge</button>
+    </div>
+  </div>
+  <div class="rankrow"><h2>Deine Kette</h2><button class="btn ghost small" id="btnPlayChain">▶ Anhören</button></div>
+  <div class="verdict ${claims ? 'claim' : 'ok'}">${claims ? `${claims} von ${n} Gliedern sind nicht in MusicBrainz belegt` : 'Alle Glieder sind in MusicBrainz belegt'}</div>
+  ${chainHtml(game, false)}
+  <button class="linkbtn" id="btnUndo2" style="align-self:flex-start">Letzten Song zurücknehmen und weiterspielen</button>
+  ${game.ch.start && game.ch.target ? '<div class="panel"><span class="eyebrow">Andere Wege zum Ziel</span><div id="altList"></div></div>' : ''}`;
 }
 function bindResult(){
   if(game.kind === 'party'){ $('#btnPartyNext').onclick = () => { game = null; LS.del('game'); view = 'party'; render(); }; return; }
