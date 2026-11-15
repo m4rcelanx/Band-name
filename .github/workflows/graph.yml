@@ -31,7 +31,7 @@ jobs:
           df -h /mnt
           curl -fsSL --retry 3 -o mbdump.tar.bz2 "$BASE/$LATEST/mbdump.tar.bz2"
           curl -fsSL -o SHA256SUMS "$BASE/$LATEST/SHA256SUMS"
-          grep ' mbdump.tar.bz2$' SHA256SUMS | sha256sum -c -
+          grep -E '[ *]mbdump\.tar\.bz2$' SHA256SUMS | sed 's/ \*/  /' | sha256sum -c - || { echo 'Prüfsummenliste:'; cat SHA256SUMS; exit 1; }
       - name: Benötigte Tabellen entpacken
         run: |
           cd /mnt/mb
