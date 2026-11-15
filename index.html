@@ -224,6 +224,20 @@ body.hasplayer .toast{bottom:calc(220px + env(safe-area-inset-bottom,0px))}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .grid2 .btn{min-height:44px;padding:10px;font-size:14px}
 .actions{gap:10px}
+.levelpick{display:flex;flex-direction:column;gap:8px}
+.lvlrow{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.lvlchip{display:flex;flex-direction:column;align-items:center;gap:1px;border:1px solid var(--line);border-radius:10px;padding:7px 4px;background:var(--bg);color:var(--muted)}
+.lvlchip b{font-size:13px}
+.lvlchip small{font:500 10px var(--f-mono);opacity:.85}
+.lvlchip.on{border-width:2px;padding:6px 3px}
+.lvlchip.lvl-leicht.on{border-color:var(--ok);color:var(--ok)}
+.lvlchip.lvl-mittel.on{border-color:var(--band);color:var(--band)}
+.lvlchip.lvl-schwer.on{border-color:var(--accent);color:var(--accent)}
+.lvlchip.lvl-profi.on{border-color:var(--bad);color:var(--bad)}
+.lvlchip.lvl-legende.on{border-color:var(--claim);color:var(--claim)}
+.lvlchip.lvl-marathon{background:color-mix(in srgb,var(--fg) 12%,transparent);color:var(--fg)}
+.lvlchip.lvl-marathon.on{border-color:var(--fg)}
+.lvlchip.on b::before{content:'✓ '}
 .lvlchoice{display:flex;flex-direction:column;gap:8px}
 .lvlbtn{display:flex;align-items:center;gap:12px;background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:14px;text-align:left;color:var(--fg);min-height:60px}
 .lvlbtn.on{border-color:var(--accent)}
@@ -1957,8 +1971,9 @@ function homeView(){
     <div id="dailyBox"><div class="busy"><span class="spin"></span><span>Wird vorbereitet …</span></div></div>
   </div>
   <div class="panel">
-    <div class="rankrow"><span class="eyebrow">Eigene Challenge</span></div>
-    <button class="btn small dicebtn" id="btnRandom">${ICON.dice} Zufällige Bands</button>
+    <span class="eyebrow">Eigene Challenge</span>
+    <div class="levelpick"><span class="small muted">Schwierigkeit (kürzester Weg)</span>${levelChips()}
+      <button class="btn dicebtn block" id="btnRandom">${ICON.dice} Zufällige Bands: ${esc(curLevel().name)}</button></div>
     <div class="vs">${pickBox('start', draft.start)}<button class="swap" id="btnSwap" aria-label="Start und Ziel tauschen" ${draft.start || draft.target ? '' : 'disabled'}>${ICON.swap}</button>${pickBox('target', draft.target)}</div>
     ${draft.duel ? `<p class="small">Duell gegen <b>${esc(draft.duel.name)}</b>: ${draft.duel.songs} Songs in ${fmtTime(draft.duel.secs * 1000)}. Weniger Songs gewinnen, bei Gleichstand die Zeit.</p>` : draft.best ? `<p class="small">Zu schlagen: <b>${draft.best} Songs</b></p>` : ''}
     ${ready ? '<div class="levelinfo" id="levelInfo"><span class="spin"></span><span class="small muted">Schwierigkeit wird berechnet …</span></div>' : ''}
@@ -1984,7 +1999,8 @@ function homeView(){
   ${h.length ? `<div class="panel"><span class="eyebrow">Zuletzt gespielt</span><div class="list">${h.slice(0, 6).map((x, i) => `
     <button class="item" data-hist="${i}"><div class="txt"><div class="t1">${esc(x.s)} → ${esc(x.t)}</div>
     <div class="t2">${new Date(x.at).toLocaleDateString('de-DE')} · ${fmtTime(x.ms)}${x.claims ? ' · ' + x.claims + ' unbelegt' : ''}${x.hints ? ' · ' + x.hints + ' Tipps' : ''}${x.solved ? ' · von der App gelöst' : ''}</div></div>
-    <span class="tag ok">${x.n} Songs${x.points !== undefined ? ' · ' + x.points + ' P.' : ''}</span></button>`).join('')}</div></div>` : ''}`;
+    <span class="tag ok">${x.n} Songs${x.points !== undefined ? ' · ' + x.points + ' P.' : ''}</span></button>`).join('')}</div></div>` : ''}
+  <p class="muted small" style="text-align:center">Version ${APP_VERSION}</p>`;
 }
 async function fillLevelInfo(){
   const el = $('#levelInfo'); if(!el) return;
@@ -2012,7 +2028,8 @@ async function fillDaily(){
 function bindHome(){
   $$('[data-pick]').forEach(b => b.onclick = () => openArtistSheet(b.dataset.pick));
   $$('[data-hist]').forEach(b => b.onclick = () => { const x = LS.get('history', [])[+b.dataset.hist]; if(x && x.code) startVerify(x.code); });
-  $('#btnRandom').onclick = () => openRandomSheet();
+  $('#btnRandom').onclick = randomChallenge;
+  bindLevelChips();
   $('#race').onchange = e => { draft.race = e.target.checked; };
   const meta = () => ({ duel:draft.duel || null, timeLimit:draft.race ? 180000 : null, par:draftPar() || null });
   $$('[data-level]').forEach(b => b.onclick = () => { LS.set('level', b.dataset.level); render(); });
@@ -2045,6 +2062,18 @@ async function startPreset(p, btn){
     if(!a || !b){ toast('Band nicht in MusicBrainz gefunden'); tag.textContent = 'Spielen'; return; }
     newGame(a, b);
   }catch(e){ handleErr(e); tag.textContent = 'Spielen'; }
+}
+const APP_VERSION = '15.11.2026 · 8';
+function levelChips(){
+  const cur = curLevel().id;
+  return `<div class="lvlrow" role="radiogroup" aria-label="Schwierigkeit">${LEVELS.map(l => `<button role="radio" aria-checked="${l.id === cur}" class="lvlchip lvl-${l.id} ${l.id === cur ? 'on' : ''}" data-level="${l.id}"><b>${l.name}</b><small>${l.hint.replace('Par ', '')} Songs</small></button>`).join('')}</div>`;
+}
+function bindLevelChips(){
+  $$('[data-level]').forEach(b => b.onclick = () => {
+    LS.set('level', b.dataset.level);
+    $$('[data-level]').forEach(x => { const on = x.dataset.level === b.dataset.level; x.classList.toggle('on', on); x.setAttribute('aria-checked', on); });
+    const r = $('#btnRandom') || $('#pRandom'); if(r) r.innerHTML = `${ICON.dice} Zufällige Bands: ${esc(curLevel().name)}`;
+  });
 }
 /* Zufällige Bands: erst die Schwierigkeit wählen */
 function openRandomSheet(after){
@@ -2840,7 +2869,8 @@ function partyView(){
     <div class="panel"><p class="muted small">Alle Teams spielen nacheinander dieselbe Aufgabe auf diesem Handy. Gewertet wird mit Par und Punkten; wer aufgibt oder die App lösen lässt, bekommt 0 Punkte.</p>
       <span class="eyebrow">Aufgabe</span>
       <div class="vs">${pickBox('start', draft.start)}<span class="arrow">→</span>${pickBox('target', draft.target)}</div>
-      <button class="btn ghost" id="pRandom">Zufällige Bands</button>
+      <span class="small muted">Schwierigkeit für zufällige Bands</span>${levelChips()}
+      <button class="btn dicebtn block" id="pRandom">${ICON.dice} Zufällige Bands: ${esc(curLevel().name)}</button>
       <label>Teams, eins pro Zeile<textarea id="pTeams" rows="4" autocomplete="off">Team 1\nTeam 2</textarea></label>
       <label>Zeitlimit pro Team<select id="pTime"><option value="0">ohne</option><option value="180">3 Minuten</option><option value="300" selected>5 Minuten</option></select></label>
       <button class="btn primary" id="pStart" ${draft.start && draft.target ? '' : 'disabled'}>Party starten</button></div>`;
@@ -2861,7 +2891,8 @@ function bindParty(){
   const party = LS.get('party', null);
   if(!party){
     $$('[data-pick]').forEach(b => b.onclick = () => openArtistSheet(b.dataset.pick));
-    $('#pRandom').onclick = () => openRandomSheet(() => { view = 'party'; render(); });
+    $('#pRandom').onclick = async () => { await randomChallenge(); view = 'party'; render(); };
+    bindLevelChips();
     $('#pStart').onclick = async () => {
       const teams = $('#pTeams').value.split('\n').map(s => s.trim()).filter(Boolean).slice(0, 8);
       if(teams.length < 2){ toast('Mindestens zwei Teams eintragen'); return; }
