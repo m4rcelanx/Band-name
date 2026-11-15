@@ -52,6 +52,7 @@ p{margin:0}
 .btn:disabled{opacity:.45;cursor:default}
 .row{display:flex;gap:10px;flex-wrap:wrap}
 .row>.btn{flex:1 1 140px}
+textarea{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:12px 14px;min-height:46px;font:13px/1.4 var(--f-mono);color:var(--fg);resize:vertical}
 input[type=text],input[type=search]{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:12px 14px;min-height:46px}
 input::placeholder{color:var(--muted)}
 label{display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--muted)}
@@ -225,6 +226,142 @@ async function searchRecordings(query, offset){
 }
 async function getRecording(id){ return recPick(await mb('recording/' + id + '?inc=artist-credits', 'high')); }
 
+/* ============ Spotify-Links auflösen (ohne Spotify-Login) ============ */
+const spTrackUrl = id => 'https://open.spotify.com/track/' + id;
+const SPID = /^[A-Za-z0-9]{22}$/;
+function parseSpotifyIds(text){
+  const ids = []; const re = /(?:open\.spotify\.com\/(?:intl-[a-z]{2}(?:-[a-z]{2})?\/)?track\/|spotify:track:)([A-Za-z0-9]{22})/g; let m;
+  while((m = re.exec(text))) if(!ids.includes(m[1])) ids.push(m[1]);
+  return ids;
+}
+const normName = n => (n || '').toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/^the\s+/, '').replace(/[^a-z0-9]+/g, '');
+const cleanTitle = t => (t || '').replace(/\s+-\s+.*$/, '').replace(/\s*[\(\[][^\)\]]*[\)\]]/g, '').trim();
+const normTitle = t => cleanTitle(t).toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+function featNames(title){
+  const m = (title || '').match(/[\(\[](?:feat\.?|ft\.?|with|mit)\s+([^\)\]]+)[\)\]]/i);
+  return m ? m[1].split(/,\s*|\s+&\s+|\s+and\s+|\s+und\s+/i).map(s => s.trim()).filter(Boolean) : [];
+}
+const sameArtist = (a, b) => (a.id && b.id) ? a.id === b.id : normName(a.name) === normName(b.name);
+
+/* Weg 1: MusicBrainz kennt den Spotify-Link direkt */
+async function mbBySpotify(id){
+  try{
+    const u = await mb('url?resource=' + encodeURIComponent(spTrackUrl(id)) + '&inc=recording-rels', 'high');
+    const rel = (u.relations || []).find(r => r.recording);
+    return rel ? await getRecording(rel.recording.id) : null;
+  }catch(e){ if(e.status === 404) return null; throw e; }
+}
+/* Weg 2: Odesli liefert Titel und Künstler (veraltet, darum nur als Zusatz) */
+let odesliDead = false, odLast = 0;
+async function odesli(url){
+  if(odesliDead) return null;
+  const go = async () => { const wait = odLast + 1500 - Date.now(); if(wait > 0) await sleep(wait); odLast = Date.now();
+    return fetch('https://api.song.link/v1-alpha.1/links?userCountry=DE&url=' + encodeURIComponent(url)); };
+  try{
+    let r = await go();
+    if(r.status === 429){ await sleep(8000); r = await go(); }
+    if(r.status === 410){ odesliDead = true; return null; }
+    if(!r.ok) return null;
+    const j = await r.json(); const ents = Object.values(j.entitiesByUniqueId || {});
+    const ent = ents.find(e => e.apiProvider === 'spotify' && e.type === 'song') || ents[0];
+    if(!ent || !ent.title) return null;
+    return { spotifyId: ent.apiProvider === 'spotify' ? ent.id : null, title: ent.title,
+      artists: (ent.artistName || '').split(/,\s*|\s+&\s+/).map(s => s.trim()).filter(Boolean) };
+  }catch(e){ return null; }
+}
+/* Weg 3: Titel aus dem öffentlichen Spotify-Einbettungsdienst */
+async function spOembed(id){
+  try{ const r = await fetch('https://open.spotify.com/oembed?url=' + encodeURIComponent(spTrackUrl(id))); if(!r.ok) return null; const j = await r.json(); return j.title ? { title:j.title } : null; }
+  catch(e){ return null; }
+}
+function dedupeRecs(list){
+  const seen = new Set();
+  return list.filter(r => { if(r.video) return false; const k = normTitle(r.title) + '|' + r.artists.map(a => a.id).sort().join(','); if(seen.has(k)) return false; seen.add(k); return true; });
+}
+async function mbCandidates(title, artist){
+  let q = `recording:"${luc(cleanTitle(title))}"`;
+  if(artist) q += ` AND artist:(${luc(artist)})`;
+  const r = await mb('recording?limit=50&query=' + encodeURIComponent(q), 'high');
+  return dedupeRecs((r.recordings || []).map(recPick));
+}
+function autoPick(cands, title, names, ctx){
+  if(!title) return null;
+  const tOk = cands.filter(r => normTitle(r.title) === normTitle(title));
+  if(names.length){
+    let best = null, bestHit = 0;
+    for(const r of tOk){
+      const hit = names.filter(n => r.artists.some(a => normName(a.name) === normName(n))).length;
+      if(hit > bestHit || (hit === bestHit && best && Math.abs(r.artists.length - names.length) < Math.abs(best.artists.length - names.length))){ best = r; bestHit = hit; }
+    }
+    return bestHit >= 1 ? best : null;
+  }
+  const known = [...ctx.anchors, ctx.target].filter(a => a && a.id);
+  const linked = tOk.filter(r => r.artists.some(a => known.some(k => k.id === a.id)));
+  const groups = new Set(linked.map(r => r.artists.map(a => a.id).sort().join(',')));
+  return groups.size === 1 ? linked[0] : null;
+}
+async function recFromNames(id, title, names, ctx){
+  const known = [...ctx.anchors, ctx.start, ctx.target].filter(a => a && a.id);
+  const artists = [];
+  for(const n of names){
+    const k = known.find(a => normName(a.name) === normName(n));
+    if(k){ artists.push({ id:k.id, name:k.name }); continue; }
+    const r = await mb('artist?limit=5&query=' + encodeURIComponent(`artist:"${luc(n)}"`), 'high');
+    const hit = (r.artists || []).find(a => normName(a.name) === normName(n));
+    artists.push(hit ? { id:hit.id, name:hit.name } : { id:null, name:n });
+  }
+  return { id:null, title:title || 'Spotify-Song', artists, credit:names.join(', '), year:'', spotifyId:id, noMb:true };
+}
+async function resolveSpotify(id, ctx){
+  const direct = await mbBySpotify(id);
+  if(direct) return { ...direct, spotifyId:id };
+  const od = await odesli(spTrackUrl(id));
+  let title = od ? od.title : null, names = od ? od.artists : [];
+  if(!title){ const oe = await spOembed(id); title = oe ? oe.title : null; }
+  if(title) names = [...new Set([...names, ...featNames(title)])];
+  let cands = [];
+  if(title){
+    cands = await mbCandidates(title, names[0]);
+    if(!autoPick(cands, title, names, ctx)) cands = dedupeRecs(cands.concat(await mbCandidates(title)));
+  }
+  const pick = autoPick(cands, title, names, ctx);
+  if(pick) return { ...pick, spotifyId:id };
+  return chooseRecording(id, title, names, cands, ctx);
+}
+function chooseRecording(id, title, names, cands, ctx){
+  return new Promise(resolve => {
+    let list = cands, finished = false;
+    const done = v => { if(finished) return; finished = true; closeSheet(); resolve(v); };
+    sheet(`<h2>Welcher Song ist das?</h2>
+      <p class="muted small">${title ? `Spotify: „${esc(title)}“${names.length ? ' von ' + esc(names.join(', ')) : ''}.` : 'Den Titel konnte ich aus dem Spotify-Link nicht lesen.'} Wähle den passenden Eintrag aus MusicBrainz, damit die Verbindung geprüft werden kann.</p>
+      <a class="small" href="${spTrackUrl(id)}" target="_blank" rel="noopener">Song in Spotify ansehen</a>
+      <input type="search" id="chQ" value="${esc(cleanTitle(title || ''))}" placeholder="Titel und Künstler suchen" enterkeyhint="search" autocomplete="off">
+      <div class="list" id="chList"></div>
+      ${names.length ? '<button class="btn ghost" id="chNoMb">Nicht dabei: mit den Spotify-Künstlern übernehmen</button>' : ''}
+      <button class="btn ghost" id="chCancel">Abbrechen</button>`, () => done(null));
+    const draw = () => {
+      const prev = ctx.anchors;
+      $('#chList').innerHTML = list.length ? list.slice(0, 30).map((r, i) => {
+        const linked = r.artists.some(a => prev.some(p => p.id === a.id));
+        return `<button class="item" data-ch="${i}"><div class="txt"><div class="t1">${esc(r.title)}</div><div class="t2">${esc(r.credit)}${r.year ? ' · ' + esc(r.year) : ''}</div></div>${linked ? '<span class="tag ok">gemeinsam</span>' : ''}</button>`;
+      }).join('') : '<p class="muted small">Keine Treffer. Ändere oben den Suchbegriff, z. B. Titel und Künstler.</p>';
+      $$('[data-ch]').forEach(b => b.onclick = () => done({ ...list[+b.dataset.ch], spotifyId:id }));
+    };
+    draw();
+    let deb;
+    $('#chQ').oninput = e => { clearTimeout(deb); deb = setTimeout(async () => {
+      const q = e.target.value.trim(); if(!q) return; const lq = luc(q);
+      try{ const r = await mb('recording?limit=30&query=' + encodeURIComponent(`(recording:(${lq}) OR artist:(${lq}))`), 'high'); list = dedupeRecs((r.recordings || []).map(recPick)); draw(); }
+      catch(err){ handleErr(err); }
+    }, 600); };
+    $('#chCancel').onclick = () => done(null);
+    if($('#chNoMb')) $('#chNoMb').onclick = async () => {
+      const b = $('#chNoMb'); b.disabled = true; b.textContent = 'Ordne Künstler zu …';
+      try{ done(await recFromNames(id, title, names, ctx)); }catch(err){ handleErr(err); done(null); }
+    };
+  });
+}
+
 /* Beziehungen: Mitglied, Kollaboration (Duo-Projekte), Künstlername derselben Person */
 const LINK_TYPES = { 'member of band':1, 'collaboration':1, 'is person':1 };
 const relCache = new Map();
@@ -249,18 +386,18 @@ function relText(q, r){
 
 /* Kernprüfung: findet die stärkste belegbare Verbindung zwischen zwei Credit-Listen */
 async function findLink(prev, next, opts, prio = 'high'){
-  const shared = next.filter(a => prev.some(p => p.id === a.id));
+  const shared = next.filter(a => prev.some(p => sameArtist(p, a)));
   if(shared.length) return { type:'feat', via:shared.map(a => ({id:a.id, name:a.name})) };
   if(!opts.bandLinks) return null;
-  const nextIds = new Set(next.map(a => a.id));
-  const prevInfos = await Promise.all(prev.map(p => artistInfo(p.id, prio)));
+  const nextIds = new Set(next.filter(a => a.id).map(a => a.id));
+  const prevInfos = await Promise.all(prev.filter(p => p.id).map(p => artistInfo(p.id, prio)));
   for(const info of prevInfos){
     for(const r of info.rels){
       if(nextIds.has(r.artist.id)) return { type:'band', a:{id:info.id, name:info.name}, b:r.artist, text:relText(info, r) };
     }
   }
   if(opts.colleagues){
-    const nextInfos = await Promise.all(next.map(n => artistInfo(n.id, prio)));
+    const nextInfos = await Promise.all(next.filter(n => n.id).map(n => artistInfo(n.id, prio)));
     for(const pi of prevInfos){
       const pBands = pi.rels.filter(r => r.type === 'member of band' && r.dir === 'forward');
       for(const ni of nextInfos){
@@ -283,14 +420,16 @@ let draft = { start:null, target:null };
 let search = { q:'', chip:null, offset:0, items:[], total:0, loading:false, collabOnly:false, seq:0 };
 let verify = null;
 let timerId = null, adding = false;
+let linkInput = '', linkBusyText = '', batchRunning = false;
 
 function anchors(){
   if(!game) return [];
   return game.steps.length ? game.steps[game.steps.length - 1].rec.artists : [game.ch.start];
 }
-function isWin(rec){ return rec.artists.some(a => a.id === game.ch.target.id); }
+const firstWithId = list => (list || []).find(a => a.id) || null;
+function isWin(rec){ return rec.artists.some(a => sameArtist(a, game.ch.target)); }
 function fmtTime(ms){ const s = Math.max(0, Math.floor(ms / 1000)); return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0'); }
-function prefetchAnchors(){ if(settings().bandLinks) anchors().forEach(a => artistInfo(a.id).catch(() => {})); }
+function prefetchAnchors(){ if(settings().bandLinks) anchors().filter(a => a.id).forEach(a => artistInfo(a.id).catch(() => {})); }
 
 function newGame(start, target){
   game = { ch:{ start, target }, steps:[], startedAt:Date.now(), finishedAt:null, won:false };
@@ -302,28 +441,78 @@ function addStep(rec, link){
   game.steps.push({ rec, link });
   if(isWin(rec)){ game.won = true; game.finishedAt = Date.now(); saveHistory(); view = 'result'; }
   LS.set('game', game);
-  if(!game.won){ search.chip = rec.artists[0] || null; search.q = ''; render(); runSearch(true); prefetchAnchors(); }
+  if(!game.won){ search.chip = firstWithId(rec.artists); search.q = ''; render(); if(!batchRunning) runSearch(true); prefetchAnchors(); }
   else render();
 }
+function isDuplicate(rec){
+  return game.steps.some(st => (rec.id && st.rec.id === rec.id) || (rec.spotifyId && st.rec.spotifyId === rec.spotifyId));
+}
+/* Gibt true zurück, wenn der Song in der Kette gelandet ist */
 async function tryAdd(rec, rowEl){
-  if(adding) return;
+  if(adding) return false;
   const s = settings();
-  if(s.maxSongs && game.steps.length >= s.maxSongs){ toast(`Limit von ${s.maxSongs} Songs erreicht. Nimm einen Schritt zurück.`); return; }
-  if(game.steps.some(st => st.rec.id === rec.id)){ toast('Der Song ist schon in deiner Kette'); return; }
+  if(s.maxSongs && game.steps.length >= s.maxSongs){ toast(`Limit von ${s.maxSongs} Songs erreicht. Nimm einen Schritt zurück.`); return false; }
+  if(isDuplicate(rec)){ toast('Der Song ist schon in deiner Kette'); return false; }
   adding = true;
   const busy = $('#addBusy'); if(busy){ busy.hidden = false; busy.querySelector('span:last-child').textContent = 'Prüfe Verbindung in MusicBrainz …'; }
   try{
     const link = await findLink(anchors(), rec.artists, s);
-    if(link){ addStep(rec, link); return; }
+    if(link){ adding = false; addStep(rec, link); return true; }
     if(rowEl){ rowEl.classList.remove('shake'); void rowEl.offsetWidth; rowEl.classList.add('shake'); }
     openNoLinkSheet(rec);
-  }catch(e){ handleErr(e); }
+    return false;
+  }catch(e){ handleErr(e); return false; }
   finally{ adding = false; const b = $('#addBusy'); if(b) b.hidden = true; }
+}
+
+/* Spotify-Links einfügen: einzeln oder als ganze Liste */
+function setLinkBusy(t){
+  linkBusyText = t || '';
+  const el = $('#linkBusy'); if(!el) return;
+  el.hidden = !linkBusyText; el.querySelector('span:last-child').textContent = linkBusyText;
+}
+async function addFromLinks(text){
+  if(batchRunning || !game || game.won) return;
+  const ids = parseSpotifyIds(text);
+  const shorts = text.match(/https?:\/\/spotify\.link\/[A-Za-z0-9]+/g) || [];
+  batchRunning = true;
+  try{
+    for(const s of shorts){
+      setLinkBusy('Kurzlink wird aufgelöst …');
+      const od = await odesli(s);
+      if(od && od.spotifyId){ if(!ids.includes(od.spotifyId)) ids.push(od.spotifyId); }
+      else toast('Kurzlink ließ sich nicht auflösen. In Spotify „Link kopieren“ nutzen.');
+    }
+    if(!ids.length){
+      toast(/spotify\.com\/(?:intl-[a-z-]+\/)?(playlist|album)/.test(text) ? 'Playlists und Alben gehen nicht. Bitte einzelne Song-Links einfügen.' : 'Kein Spotify-Song-Link gefunden');
+      return;
+    }
+    let added = 0;
+    for(let i = 0; i < ids.length; i++){
+      if(!game || game.won) break;
+      const label = ids.length > 1 ? `Song ${i + 1} von ${ids.length}: ` : '';
+      setLinkBusy(label + 'Spotify-Link wird erkannt …');
+      let rec;
+      try{ rec = await resolveSpotify(ids[i], { anchors:anchors(), start:game.ch.start, target:game.ch.target }); }
+      catch(e){ handleErr(e); break; }
+      if(!rec){ if(i < ids.length - 1) toast('Abgebrochen. Restliche Links wurden nicht übernommen.'); break; }
+      setLinkBusy(label + 'Prüfe Verbindung …');
+      const ok = await tryAdd(rec);
+      if(!ok){ if(i < ids.length - 1) toast(`Bei Song ${i + 1} angehalten. Die restlichen Links bleiben im Feld.`); linkInput = ids.slice(i + 1).map(spTrackUrl).join('\n'); break; }
+      added++;
+      if(i === ids.length - 1) linkInput = '';
+    }
+    if(added && !(game && game.won)) toast(added === 1 ? 'Song hinzugefügt' : `${added} Songs hinzugefügt`);
+  }finally{
+    batchRunning = false; setLinkBusy('');
+    const ta = $('#spIn'); if(ta) ta.value = linkInput;
+    if(view === 'game' && game && !game.won) runSearch(true);
+  }
 }
 function undo(){
   if(!game || !game.steps.length) return;
   game.steps.pop(); game.won = false; game.finishedAt = null; LS.set('game', game);
-  view = 'game'; search.chip = anchors()[0] || null; search.q = '';
+  view = 'game'; search.chip = firstWithId(anchors()); search.q = '';
   render(); runSearch(true);
 }
 function saveHistory(){
@@ -334,8 +523,20 @@ function saveHistory(){
 }
 
 /* Prüf-Code: Start, Ziel und alle Aufnahmen als MusicBrainz-IDs; ! markiert unbelegte Glieder */
-function chainCode(g){ return [g.ch.start.id, g.ch.target.id, ...g.steps.map(s => s.rec.id + (s.link.type === 'claim' ? '!' : ''))].join('.'); }
+/* Glied: [MusicBrainz-Aufnahme]~[Spotify-ID]~[Künstler-IDs, nur ohne Aufnahme] und ! für unbelegt */
+function stepToken(s){
+  const r = s.rec; let t = r.id || '';
+  if(r.spotifyId) t += '~' + r.spotifyId;
+  if(!r.id) t += '~' + r.artists.filter(a => a.id).map(a => a.id).join(',');
+  return t + (s.link.type === 'claim' ? '!' : '');
+}
+function parseToken(p){
+  const claim = p.endsWith('!'); const [mbid = '', sp = '', arts = ''] = p.replace(/!$/, '').split('~');
+  return { mbid, sp, arts:arts ? arts.split(',') : [], claim };
+}
+function chainCode(g){ return [g.ch.start.id, g.ch.target.id, ...g.steps.map(stepToken)].join('.'); }
 const MBID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+function tokenValid(t){ return (t.mbid ? MBID.test(t.mbid) : !!t.sp) && (!t.sp || SPID.test(t.sp)) && t.arts.every(a => MBID.test(a)); }
 
 /* ============ Rendering ============ */
 const LOGO = `<svg width="34" height="34" viewBox="0 0 34 34" aria-hidden="true"><rect width="34" height="34" rx="9" fill="#FF6B3D"/><circle cx="10" cy="11" r="4" fill="#15121F"/><circle cx="24" cy="23" r="4" fill="#15121F"/><path d="M12.5 13.5 21.5 20.5" stroke="#15121F" stroke-width="3" stroke-linecap="round"/></svg>`;
@@ -404,7 +605,7 @@ function bindHome(){
     const v = $('#verifyIn').value.trim(); const m = v.match(/#k=([^\s]+)/);
     startVerify(m ? m[1] : v);
   };
-  if($('#btnResume')) $('#btnResume').onclick = () => { view = 'game'; search.chip = anchors()[0] || null; render(); runSearch(true); prefetchAnchors(); };
+  if($('#btnResume')) $('#btnResume').onclick = () => { view = 'game'; search.chip = firstWithId(anchors()); render(); runSearch(true); prefetchAnchors(); };
   if($('#btnAbort')) $('#btnAbort').onclick = () => { game = null; LS.del('game'); render(); };
 }
 async function startPreset(p, btn){
@@ -436,11 +637,11 @@ function linkHtml(link, status){
   return `<div class="link ${cls}"><span class="bar"></span><span class="lbl">${txt}</span></div>`;
 }
 function songNode(rec, i){
-  const sp = 'https://open.spotify.com/search/' + encodeURIComponent(rec.title + ' ' + (rec.artists[0] ? rec.artists[0].name : ''));
+  const title = rec.id ? `<a href="https://musicbrainz.org/recording/${esc(rec.id)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">${esc(rec.title)}</a>` : esc(rec.title);
   return `<div class="node"><span class="num">${i + 1}</span>
-    <div class="txt"><div class="t1"><a href="https://musicbrainz.org/recording/${esc(rec.id)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">${esc(rec.title)}</a></div>
-    <div class="t2">${esc(rec.credit)}${rec.year ? ' · ' + esc(rec.year) : ''}</div></div>
-    <a class="play" href="${sp}" target="_blank" rel="noopener" aria-label="In Spotify suchen">▶ Spotify</a></div>`;
+    <div class="txt"><div class="t1">${title}</div>
+    <div class="t2">${esc(rec.credit)}${rec.year ? ' · ' + esc(rec.year) : ''}${rec.noMb ? ' · Song nicht in MusicBrainz' : ''}</div></div>
+    <a class="play" href="${spotifyUrl(rec)}" target="_blank" rel="noopener" aria-label="${rec.spotifyId ? 'In Spotify öffnen' : 'In Spotify suchen'}">▶ Spotify</a></div>`;
 }
 function endpointNode(a, label, reached){
   return `<div class="node endpoint ${reached ? 'reached' : ''}"><span class="num">${label === 'Start' ? '●' : '◎'}</span>
@@ -469,8 +670,15 @@ function gameView(){
   ${chainHtml(game, true)}
   ${game.steps.length ? '<button class="btn ghost block" id="btnLinksGame">Linkliste der bisherigen Songs</button>' : ''}
   <div class="panel">
-    <span class="eyebrow">Nächster Song</span>
-    <p class="muted small">Er muss einen dieser Künstler enthalten${s.bandLinks ? ' oder mit ihm über eine Band verbunden sein' : ''}:</p>
+    <span class="eyebrow">Nächster Song per Spotify-Link</span>
+    <p class="muted small">In Spotify beim Song „Teilen → Link kopieren“ und hier einfügen. Mehrere Links auf einmal gehen auch, z. B. eure Liste aus WhatsApp.</p>
+    <textarea id="spIn" rows="2" placeholder="https://open.spotify.com/track/…" autocomplete="off" autocapitalize="off" spellcheck="false">${esc(linkInput)}</textarea>
+    <div class="row"><button class="btn ghost" id="spPaste">Aus Zwischenablage</button><button class="btn primary" id="spAdd">Hinzufügen</button></div>
+    <div class="busy" id="linkBusy" ${linkBusyText ? '' : 'hidden'}><span class="spin"></span><span>${esc(linkBusyText)}</span></div>
+  </div>
+  <div class="panel">
+    <span class="eyebrow">Oder in der Datenbank suchen</span>
+    <p class="muted small">Der Song muss einen dieser Künstler enthalten${s.bandLinks ? ' oder mit ihm über eine Band verbunden sein' : ''}:</p>
     <div class="chips" id="chips">${chipsHtml()}</div>
     <input type="search" id="q" placeholder="${search.chip ? 'Titel oder weiteren Künstler eingrenzen' : 'Songtitel oder Künstler'}" value="${esc(search.q)}" enterkeyhint="search" autocomplete="off">
     <label class="check small"><input type="checkbox" id="collab" ${search.collabOnly ? 'checked' : ''}> Nur Songs mit mehreren Künstlern</label>
@@ -481,7 +689,7 @@ function gameView(){
 }
 function chipsHtml(){
   const a = anchors();
-  let html = a.map(x => `<button class="chip ${search.chip && search.chip.id === x.id ? 'on' : ''}" data-chip="${esc(x.id)}" data-name="${esc(x.name)}">${esc(x.name)}</button>`).join('');
+  let html = a.filter(x => x.id).map(x => `<button class="chip ${search.chip && search.chip.id === x.id ? 'on' : ''}" data-chip="${esc(x.id)}" data-name="${esc(x.name)}">${esc(x.name)}</button>`).join('');
   if(settings().hints && hintList.length) html += hintList.map(x => `<button class="chip hint ${search.chip && search.chip.id === x.id ? 'on' : ''}" data-chip="${esc(x.id)}" data-name="${esc(x.name)}">↔ ${esc(x.name)}</button>`).join('');
   return html;
 }
@@ -519,6 +727,14 @@ function bindGame(){
   $('#btnHome').onclick = () => { view = 'home'; render(); };
   $('#btnUndo').onclick = undo;
   if($('#btnLinksGame')) $('#btnLinksGame').onclick = () => openLinkList(game, { finished:false });
+  const ta = $('#spIn');
+  ta.oninput = () => { linkInput = ta.value; };
+  ta.addEventListener('paste', () => setTimeout(() => { linkInput = ta.value; if(parseSpotifyIds(ta.value).length || /spotify\.link\//.test(ta.value)) addFromLinks(ta.value); }, 60));
+  $('#spAdd').onclick = () => { linkInput = ta.value; addFromLinks(ta.value); };
+  $('#spPaste').onclick = async () => {
+    try{ const t = await navigator.clipboard.readText(); ta.value = t; linkInput = t; addFromLinks(t); }
+    catch(e){ ta.focus(); toast('Lange ins Feld tippen und „Einsetzen“ wählen'); }
+  };
   bindChips();
   let deb;
   $('#q').oninput = e => { search.q = e.target.value; clearTimeout(deb); deb = setTimeout(() => runSearch(true), 600); };
@@ -573,7 +789,7 @@ function tick(){ const c = $('#clock'); if(c && game) c.textContent = fmtTime(Da
 /* ---------- Keine Verbindung gefunden ---------- */
 function openNoLinkSheet(rec){
   const s = settings(); const prev = anchors();
-  const artistLinks = [...prev, ...rec.artists].filter((a, i, l) => l.findIndex(x => x.id === a.id) === i)
+  const artistLinks = [...prev, ...rec.artists].filter((a, i, l) => a.id && l.findIndex(x => x.id === a.id) === i)
     .map(a => `<a href="https://musicbrainz.org/artist/${esc(a.id)}/relationships" target="_blank" rel="noopener">${esc(a.name)}</a>`).join(' · ');
   sheet(`
     <h2>Keine Verbindung gefunden</h2>
@@ -591,7 +807,7 @@ function openNoLinkSheet(rec){
 }
 
 /* ---------- Linkliste ---------- */
-function spotifyUrl(rec){ return 'https://open.spotify.com/search/' + encodeURIComponent(rec.title + ' ' + (rec.artists[0] ? rec.artists[0].name : '')); }
+function spotifyUrl(rec){ if(rec.spotifyId) return spTrackUrl(rec.spotifyId); return 'https://open.spotify.com/search/' + encodeURIComponent(rec.title + ' ' + (rec.artists[0] ? rec.artists[0].name : '')); }
 function linkListText(g, opts = {}){
   const head = `🎸 ${g.ch.start.name} → ${g.ch.target.name} (${g.steps.length} Song${g.steps.length === 1 ? '' : 's'}${opts.finished ? '' : ', noch unterwegs'})`;
   const lines = [head, ''];
@@ -656,27 +872,35 @@ function resultText(){
 /* ---------- Prüfansicht ---------- */
 async function startVerify(code){
   const parts = (code || '').split('.');
-  const ids = parts.map(p => p.replace(/!$/, ''));
-  if(parts.length < 3 || !ids.every(id => MBID.test(id))){ toast('Das ist kein gültiger Prüf-Link'); return; }
+  const toks = parts.slice(2).map(parseToken);
+  if(parts.length < 3 || !MBID.test(parts[0]) || !MBID.test(parts[1]) || !toks.every(tokenValid)){ toast('Das ist kein gültiger Prüf-Link'); return; }
   verify = { code, total:parts.length, done:0, status:'loading', g:null, problems:0, claims:0 };
   view = 'verify'; render();
   try{
     const s = { ...settings(), bandLinks:true };
-    const startInfo = await artistInfo(ids[0], 'high'); verify.done++; updateVerifyProgress();
-    const targetInfo = await artistInfo(ids[1], 'high'); verify.done++; updateVerifyProgress();
+    const startInfo = await artistInfo(parts[0], 'high'); verify.done++; updateVerifyProgress();
+    const targetInfo = await artistInfo(parts[1], 'high'); verify.done++; updateVerifyProgress();
     const g = { ch:{ start:startInfo, target:targetInfo }, steps:[] };
     let prev = [startInfo];
-    for(let i = 2; i < parts.length; i++){
-      const rec = await getRecording(ids[i]); verify.done++; updateVerifyProgress();
+    for(const t of toks){
+      let rec;
+      if(t.mbid){ rec = { ...(await getRecording(t.mbid)), spotifyId:t.sp || null }; }
+      else {
+        const arts = [];
+        for(const aid of t.arts){ const ai = await artistInfo(aid, 'high'); arts.push({ id:ai.id, name:ai.name }); }
+        const oe = await spOembed(t.sp);
+        rec = { id:null, title:oe ? oe.title : 'Spotify-Song', artists:arts, credit:arts.map(a => a.name).join(', '), year:'', spotifyId:t.sp, noMb:true };
+      }
+      verify.done++; updateVerifyProgress();
       let link = await findLink(prev, rec.artists, s);
       if(!link){
-        if(parts[i].endsWith('!')){ link = { type:'claim' }; verify.claims++; }
+        if(t.claim){ link = { type:'claim' }; verify.claims++; }
         else { link = { type:'bad', text:'keine Verbindung in MusicBrainz' }; verify.problems++; }
       }
       g.steps.push({ rec, link }); prev = rec.artists;
     }
     const last = g.steps[g.steps.length - 1];
-    verify.reached = !!last && last.rec.artists.some(a => a.id === targetInfo.id);
+    verify.reached = !!last && last.rec.artists.some(a => sameArtist(a, targetInfo));
     if(!verify.reached) verify.problems++;
     verify.g = g; verify.status = 'done';
   }catch(e){ verify.status = 'error'; verify.error = e.message; }
@@ -733,9 +957,9 @@ async function readHash(){
 }
 
 /* ---------- Sheets ---------- */
-function sheet(inner){
+function sheet(inner, onDismiss){
   $('#sheetRoot').innerHTML = `<div class="sheet" id="sheet"><div class="card" role="dialog" aria-modal="true">${inner}</div></div>`;
-  $('#sheet').onclick = e => { if(e.target.id === 'sheet' || e.target.hasAttribute('data-close')) closeSheet(); };
+  $('#sheet').onclick = e => { if(e.target.id === 'sheet' || e.target.hasAttribute('data-close')){ closeSheet(); if(onDismiss) onDismiss(); } };
 }
 function closeSheet(){ $('#sheetRoot').innerHTML = ''; }
 
@@ -787,7 +1011,7 @@ function makeIcon(){
 /* ---------- Start ---------- */
 (async function init(){
   makeIcon();
-  if(game && !game.won){ view = 'game'; search.chip = anchors()[0] || null; }
+  if(game && !game.won){ view = 'game'; search.chip = firstWithId(anchors()); }
   const verifying = await readHash();
   if(!verifying){ render(); if(view === 'game'){ runSearch(true); prefetchAnchors(); } }
   window.addEventListener('hashchange', readHash);
