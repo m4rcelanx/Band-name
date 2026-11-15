@@ -104,6 +104,12 @@ label{display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--mute
 .link.band .lbl{color:var(--band)} .link.claim .lbl{color:var(--claim)} .link.bad .lbl{color:var(--bad)}
 .link .lbl a{color:inherit}
 
+.alt{border-top:1px solid var(--line);padding-top:12px;display:flex;flex-direction:column;gap:8px}
+.alt:first-of-type{border-top:0;padding-top:0}
+.altroute{font-size:14px;line-height:1.5;overflow-wrap:anywhere}
+.altroute .arrow{font-size:13px}
+.altsteps{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--muted)}
+.altsteps a{color:var(--fg)}
 .rankbar{display:flex;flex-direction:column;gap:8px;width:100%}
 .rankrow{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
 .rankrow b{font-family:var(--f-display);font-size:18px}
@@ -768,6 +774,8 @@ function graphPath(starts, targets, opts){
   let frontier = T.slice(), hit = -1;
   const visit = (x, y, c, nextF) => {
     if(seen[y]) return false;
+    if(opts.blocked && opts.blocked.has(y) && !S.has(y)) return false;
+    if(opts.noEdge && opts.noEdge.has(x * 4194304 + y)) return false;
     if(!opts.pure && badEdges.has(((c & 7) === 2 ? 'f:' : '') + g.ids[y] + '>' + g.ids[x])) return false;
     seen[y] = 1; next[y] = x; nk[y] = c; nextF.push(y);
     return S.has(y);
@@ -1665,10 +1673,12 @@ function openHints(opts = {}){
       <div id="lv2" ${level >= 2 ? '' : 'hidden'}>${stepCard(first, 0)}</div>
       <div id="lv3" ${level >= 3 ? '' : 'hidden'}><div class="chain">${p.map((e, i) => (i ? `<div class="link ${e.via.type === 'band' ? 'band' : ''}"><span class="bar"></span><span class="lbl">${e.via.bandText ? esc(e.via.bandText) : e.via.type === 'band' ? esc(e.via.text) : 'gemeinsam: ' + esc(e.fromName)}</span></div>` : '') + stepCard(e, i)).join('')}</div></div>
       <button class="btn" id="hintMore" ${level >= 3 ? 'hidden' : ''}>${['Kleiner Tipp: welcher Künstler?', 'Nächsten Song zeigen', 'Ganzen Weg zeigen'][level] || ''}</button>
+      <button class="btn ghost" id="hintAlt">Andere Wege zeigen (1 Tipp)</button>
       <button class="btn ghost" id="hintSolve">Komplette Kette ausgeben</button>
       <p class="muted small" style="margin-top:-4px">Hängt alle Songs bis zum Ziel an. Das Ergebnis wird als „von der App gelöst“ markiert.</p>`;
     $('#hintMore').onclick = () => { level++; countHint(); showPath(p); };
     $('#hintSolve').onclick = () => solve(p);
+    $('#hintAlt').onclick = () => { cancelled = true; openAltSheet(); };
     $$('#hintBody [data-use]').forEach(b => b.onclick = () => useSong({ ...first.via.rec }));
     $$('#hintBody [data-artist]').forEach(b => b.onclick = () => searchArtistSongs({ id:first.to, name:first.toName }));
   };
@@ -1813,6 +1823,99 @@ function openLinkList(g, opts = {}){
   $('#llShare').onclick = () => shareText(current());
 }
 
+/* ---------- Alternative Wege ---------- */
+function songCount(edges){
+  let n = 0;
+  for(let i = 0; i < edges.length; i++){ n++; if(edges[i].via.type === 'band' && edges[i + 1] && edges[i + 1].via.type === 'feat') i++; }
+  return n;
+}
+/* Erst der kürzeste Weg, dann Wege, die keinen Zwischenkünstler der bisherigen Wege mehr benutzen.
+   So unterscheiden sich die Vorschläge wirklich und sind nicht fünfmal fast dieselbe Route. */
+async function altPaths(starts, target, k = 5, maxExtra = 3){
+  await loadGraph();
+  const S = starts.filter(a => a.id && graph.idx.has(a.id));
+  if(!S.length || !graph.idx.has(target.id)) return [];
+  const opts = { bandLinks:settings().bandLinks, blocked:new Set(), noEdge:new Set() };
+  const out = [], seen = new Set();
+  for(let t = 0; t < k * 3 && out.length < k; t++){
+    const gp = graphPath(S, [target], opts);
+    if(!gp || !gp.edges.length) break;
+    const mids = gp.edges.slice(0, -1).map(e => e.to), key = gp.edges.map(e => e.from).join('>');
+    const songs = songCount(gp.edges);
+    if(out.length && songs > out[0].songs + maxExtra) break;
+    if(!seen.has(key)){ seen.add(key); out.push({ edges:gp.edges, songs }); }
+    if(mids.length) mids.forEach(id => opts.blocked.add(graph.idx.get(id)));
+    else { const a = graph.idx.get(gp.edges[0].from), b = graph.idx.get(target.id); opts.noEdge.add(b * 4194304 + a); opts.noEdge.add(a * 4194304 + b); }
+  }
+  /* Zu wenige Wege: zweite Runde, die jeweils nur einen Zwischenkünstler eines gefundenen Wegs sperrt */
+  for(let r = 0; r < out.length && out.length < k; r++){
+    for(const e of out[r].edges.slice(0, -1)){
+      if(out.length >= k) break;
+      const gp = graphPath(S, [target], { bandLinks:opts.bandLinks, blocked:new Set([graph.idx.get(e.to)]) });
+      if(!gp || !gp.edges.length) continue;
+      const key = gp.edges.map(x => x.from).join('>'), songs = songCount(gp.edges);
+      if(!seen.has(key) && songs <= out[0].songs + maxExtra){ seen.add(key); out.push({ edges:gp.edges, songs }); }
+    }
+  }
+  return out.sort((x, y) => x.songs - y.songs);
+}
+function pathSteps(edges){
+  const st = [];
+  for(let i = 0; i < edges.length; i++){
+    const e = edges[i], nx = edges[i + 1];
+    if(e.via.type === 'band' && nx && nx.via.type === 'feat'){ st.push({ band:e, feat:nx }); i++; }
+    else st.push(e.via.type === 'band' ? { band:e } : { feat:e });
+  }
+  return st;
+}
+function altItemHtml(p, i, startName){
+  const names = [startName, ...p.edges.map(e => e.toName)];
+  const steps = pathSteps(p.edges).map(st => {
+    const song = st.feat && st.feat.via.rec ? `<a href="${spotifyUrl(st.feat.via.rec)}" target="_blank" rel="noopener">${esc(st.feat.via.rec.title)}</a> – ${esc(st.feat.via.rec.credit)}` : null;
+    if(st.band && st.feat) return `<li>${esc(st.band.via.text)}, dann ${song || 'ein Song mit ' + esc(st.feat.fromName) + ' und ' + esc(st.feat.toName)}</li>`;
+    if(st.band) return `<li>${esc(st.band.via.text)}, dann ein Song von ${esc(st.band.toName)}</li>`;
+    return `<li>${song || 'ein Song mit ' + esc(st.feat.fromName) + ' und ' + esc(st.feat.toName)}</li>`;
+  }).join('');
+  return `<div class="alt" data-alt="${i}"><div class="rankrow"><b>Weg ${i + 1}</b><span class="tag ${i === 0 ? 'ok' : ''}">${p.songs} Song${p.songs === 1 ? '' : 's'}</span></div>
+    <div class="altroute">${names.map(esc).join(' <span class="arrow">→</span> ')}</div>
+    <ol class="altsteps">${steps}</ol>
+    ${p.loaded ? '' : `<button class="btn ghost" data-altload="${i}" style="min-height:38px;padding:8px 12px">Songs anzeigen</button>`}</div>`;
+}
+/* Füllt eine Liste mit alternativen Wegen; "Songs anzeigen" holt die Aufnahmen aus MusicBrainz */
+async function fillAlternatives(el, starts, target, startName, ownSongs){
+  if(!el) return;
+  el.innerHTML = '<div class="busy"><span class="spin"></span><span>Suche andere Wege im Musiknetz …</span></div>';
+  let list;
+  try{ list = await altPaths(starts, target); }catch(e){ el.innerHTML = `<p class="muted small">Andere Wege nicht verfügbar: ${esc(e.message)}</p>`; return; }
+  if(!document.body.contains(el)) return;
+  if(!list.length){ el.innerHTML = '<p class="muted small">Im Musiknetz ist kein Weg gespeichert. Das passiert bei Bands, die dort fehlen.</p>'; return; }
+  const draw = () => {
+    const best = list[0].songs;
+    el.innerHTML = (ownSongs ? `<p class="small">${ownSongs < best ? `Dein Weg mit ${ownSongs} Songs ist kürzer als alles im Musiknetz.` : ownSongs === best ? `Dein Weg ist so kurz wie der kürzeste im Musiknetz (${best} Songs).` : `Kürzester Weg im Musiknetz: ${best} Songs, deiner hatte ${ownSongs}.`}</p>` : '')
+      + list.map((p, i) => altItemHtml(p, i, startName)).join('');
+    el.querySelectorAll('[data-altload]').forEach(b => b.onclick = async () => {
+      const p = list[+b.dataset.altload];
+      b.disabled = true; b.textContent = 'Hole Songs aus MusicBrainz …';
+      try{
+        const copy = p.edges.map(e => ({ ...e, via:{ ...e.via } }));
+        if(await verifyPath(copy, { usedRecs:new Set() })){ p.edges = copy; p.loaded = true; recordPath(copy); }
+        else { list.splice(+b.dataset.altload, 1); toast('Ein Schritt dieses Wegs ist in MusicBrainz nicht mehr belegt'); }
+      }catch(e){ handleErr(e); }
+      if(document.body.contains(el)) draw();
+    });
+  };
+  draw();
+}
+/* Im Spiel: andere Wege von der aktuellen Stelle aus, zählt als ein Tipp */
+function openAltSheet(){
+  const starts = anchors().filter(a => a.id);
+  if(!starts.length || !game || game.free){ toast('Andere Wege gibt es nur mit Zielband'); return; }
+  countHint();
+  sheet(`<h2>Andere Wege ab hier</h2><p class="muted small">Vom letzten Song bis ${esc(game.ch.target.name)}. Das zählt als ein Tipp.</p>
+    <div id="altSheet"></div><button class="btn ghost" data-close>Schließen</button>`, () => render());
+  fillAlternatives($('#altSheet'), starts, game.ch.target, starts.map(a => a.name).join(' / '), 0);
+}
+
 /* ---------- Ergebnis ---------- */
 function scorePanel(a){
   const sc = a.score;
@@ -1845,6 +1948,7 @@ function resultView(){
   ${scorePanel(a)}
   <div class="verdict ${claims ? 'claim' : 'ok'}">${claims ? `${claims} von ${n} Gliedern sind nicht in MusicBrainz belegt` : 'Alle Glieder sind in MusicBrainz belegt'}</div>
   ${chainHtml(game, false)}
+  ${game.ch.start && game.ch.target ? '<div class="panel"><span class="eyebrow">Andere Wege zum Ziel</span><div id="altList"></div></div>' : ''}
   <div class="panel">
     ${game.kind === 'daily' ? '<button class="btn primary block" id="btnDailyShare">Tagesergebnis teilen (ohne Lösung)</button>' : ''}
     ${pk && game.idx + 1 < pk.list.length ? '<button class="btn primary block" id="btnPackNext">Nächste Aufgabe im Paket</button>' : ''}
@@ -1857,6 +1961,7 @@ function resultView(){
 }
 function bindResult(){
   if(game.kind === 'party'){ $('#btnPartyNext').onclick = () => { game = null; LS.del('game'); view = 'party'; render(); }; return; }
+  if($('#altList')) fillAlternatives($('#altList'), [game.ch.start], game.ch.target, game.ch.start.name, game.steps.length);
   $('#btnShare').onclick = () => shareText(resultText());
   $('#btnLinks').onclick = () => openLinkList(game, { finished:true, code:chainCode(game) });
   $('#btnChallenge').onclick = () => {
@@ -1936,11 +2041,13 @@ function verifyView(){
   <div class="verdict ${cls}">${esc(verdict)}</div>
   ${chainHtml(g, false)}
   ${!v.reached ? endpointNode(g.ch.target, 'Ziel nicht erreicht', false) : ''}
+  <div class="panel"><span class="eyebrow">Andere Wege zum Ziel</span><div id="altList"></div></div>
   <button class="btn block" id="btnVerifyLinks">Linkliste erstellen</button>
   <button class="btn ghost block" id="btnPlaySame">Diese Challenge selbst spielen</button>`;
 }
 function bindVerify(){
   $('#btnHome').onclick = () => { view = 'home'; verify = null; render(); };
+  if($('#altList') && verify.g) fillAlternatives($('#altList'), [verify.g.ch.start], verify.g.ch.target, verify.g.ch.start.name, verify.reached && !verify.problems ? verify.g.steps.length : 0);
   if($('#btnVerifyLinks')) $('#btnVerifyLinks').onclick = () => openLinkList(verify.g, { finished:!!verify.reached, code:verify.code });
   if($('#btnPlaySame')) $('#btnPlaySame').onclick = () => { const g = verify.g; verify = null; newGame(artistPick(g.ch.start), artistPick(g.ch.target), g.steps.length || null); };
 }
