@@ -26,9 +26,11 @@ async function sparql(q, tries = 0){
   if(r.status === 429 || r.status === 503){
     if(tries < 6){ const wait = (+r.headers.get('retry-after') || 10) * 1000; await sleep(wait); return sparql(q, tries + 1); }
   }
-  const text = await r.text();
-  if(!r.ok || /TimeoutException|QueryTimeout/.test(text.slice(0, 2000))) throw new Error(r.status === 200 ? 'timeout' : (r.status === 500 ? 'timeout' : 'HTTP ' + r.status + ' ' + text.slice(0, 200)));
-  return JSON.parse(text).results.bindings;
+  let text;
+  try{ text = await r.text(); }catch(e){ throw new Error('timeout'); }
+  if([500, 502, 504].includes(r.status) || /TimeoutException|QueryTimeout/.test(text.slice(0, 3000))) throw new Error('timeout');
+  if(!r.ok) throw new Error('HTTP ' + r.status + ' ' + text.slice(0, 200));
+  try{ return JSON.parse(text).results.bindings; }catch(e){ throw new Error('timeout'); }
 }
 
 const idx = new Map(), ids = [], names = [];
@@ -61,24 +63,22 @@ async function partitioned(label, build, set, prefix = ''){
       console.log(`${label} ${p.padEnd(3)} ${rows.length} Zeilen, ${n} neue Kanten (gesamt ${set.size})`);
       await sleep(1500);
     }catch(e){
-      if(e.message === 'timeout' && p.length < 3){ console.log(`${label} ${p}: zu groß, teile weiter auf`); await partitioned(label, build, set, p); }
+      if(e.message === 'timeout' && p.length < 4){ console.log(`${label} ${p}: zu groß, teile weiter auf`); await partitioned(label, build, set, p); }
       else { console.log(`${label} ${p}: übersprungen (${e.message})`); }
     }
   }
 }
 
-const LABELS = `
-  OPTIONAL { ?x rdfs:label ?xl FILTER(LANG(?xl) = "en") }
-  OPTIONAL { ?y rdfs:label ?yl FILTER(LANG(?yl) = "en") }`;
+const LABELS = '';
 
-const memberQ = p => `SELECT ?a ?b ?xl ?yl WHERE {
+const memberQ = p => `SELECT DISTINCT ?a ?b WHERE {
   ?x wdt:P434 ?a . FILTER(STRSTARTS(?a, "${p}"))
   { ?x wdt:P463 ?y } UNION { ?y wdt:P527 ?x }
   ?y wdt:P434 ?b .
   ${LABELS}
 }`;
 
-const songQ = p => `SELECT ?a ?b ?xl ?yl WHERE {
+const songQ = p => `SELECT DISTINCT ?a ?b WHERE {
   ?x wdt:P434 ?a . FILTER(STRSTARTS(?a, "${p}"))
   ?s wdt:P175 ?x .
   ?s wdt:P175 ?y .
@@ -93,6 +93,22 @@ const t0 = Date.now();
 const members = new Set(), songs = new Set();
 await partitioned('Mitglieder', memberQ, members);
 await partitioned('Songs', songQ, songs);
+
+// Namen gesammelt nachladen (englisch, sonst deutsch, sonst sprachneutral)
+for(let k = 0; k < ids.length; k += 300){
+  const chunk = ids.slice(k, k + 300);
+  try{
+    const rows = await sparql(`SELECT ?a ?l (LANG(?l) AS ?lang) WHERE {
+      VALUES ?a { ${chunk.map(x => `"${x}"`).join(' ')} }
+      ?x wdt:P434 ?a . ?x rdfs:label ?l . FILTER(LANG(?l) IN ("en", "de", "mul"))
+    }`);
+    const rank = { en:0, de:1, mul:2 }, best = new Map();
+    for(const b of rows){ const r = rank[b.lang.value] ?? 9, cur = best.get(b.a.value); if(!cur || r < cur.r) best.set(b.a.value, { r, l:b.l.value }); }
+    for(const [a, v] of best){ const i = idx.get(a); if(i !== undefined) names[i] = v.l; }
+  }catch(e){ console.log(`Namen ${k}: übersprungen (${e.message})`); }
+  if(k % 6000 === 0) console.log(`Namen ${k} von ${ids.length}`);
+  await sleep(700);
+}
 
 const flat = set => { const out = []; for(const k of set){ const [i, j] = k.split(','); out.push(+i, +j); } return out; };
 const graph = { v:1, built:new Date().toISOString().slice(0, 10), ids, names, m:flat(members), s:flat(songs) };
