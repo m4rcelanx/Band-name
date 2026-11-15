@@ -622,7 +622,7 @@ function undo(){
 function saveHistory(){
   const h = LS.get('history', []);
   h.unshift({ s:game.ch.start.name, t:game.ch.target.name, n:game.steps.length,
-    claims:game.steps.filter(x => x.link.type === 'claim').length, ms:game.finishedAt - game.startedAt, at:game.finishedAt, hints:game.hints || 0, code:chainCode(game) });
+    claims:game.steps.filter(x => x.link.type === 'claim').length, ms:game.finishedAt - game.startedAt, at:game.finishedAt, hints:game.hints || 0, solved:!!game.solved, code:chainCode(game) });
   LS.set('history', h.slice(0, 30));
 }
 
@@ -680,6 +680,7 @@ function homeView(){
       <button class="btn primary" id="btnStart" ${draft.start && draft.target ? '' : 'disabled'}>Los geht’s</button>
     </div>
     <button class="btn ghost block" id="btnShareCh" ${draft.start && draft.target ? '' : 'disabled'}>Challenge an die Gruppe schicken</button>
+    <button class="btn ghost block" id="btnAutoBuild" ${draft.start && draft.target ? '' : 'disabled'}>Kette von der App bauen lassen</button>
   </div>
   <div class="panel">
     <span class="eyebrow">Freie Kette</span>
@@ -700,7 +701,7 @@ function homeView(){
   </div>
   ${h.length ? `<div class="panel"><span class="eyebrow">Deine Ergebnisse</span><div class="list">${h.slice(0, 10).map((x, i) => `
     <button class="item" data-hist="${i}"><div class="txt"><div class="t1">${esc(x.s)} → ${esc(x.t)}</div>
-    <div class="t2">${new Date(x.at).toLocaleDateString('de-DE')} · ${fmtTime(x.ms)}${x.claims ? ' · ' + x.claims + ' unbelegt' : ''}${x.hints ? ' · ' + x.hints + ' Tipps' : ''}</div></div>
+    <div class="t2">${new Date(x.at).toLocaleDateString('de-DE')} · ${fmtTime(x.ms)}${x.claims ? ' · ' + x.claims + ' unbelegt' : ''}${x.hints ? ' · ' + x.hints + ' Tipps' : ''}${x.solved ? ' · von der App gelöst' : ''}</div></div>
     <span class="tag ok">${x.n} Songs</span></button>`).join('')}</div></div>` : ''}`;
 }
 function bindHome(){
@@ -710,6 +711,7 @@ function bindHome(){
   $('#btnRandom').onclick = randomChallenge;
   $('#btnStart').onclick = () => newGame(draft.start, draft.target, draft.best);
   $('#btnShareCh').onclick = () => shareChallenge(draft.start, draft.target, draft.best);
+  $('#btnAutoBuild').onclick = () => { newGame(draft.start, draft.target, draft.best); openHints({ auto:true }); };
   $('#btnFree').onclick = () => { if(game && !game.won && game.steps.length){ toast('Erst die laufende Kette weiterbauen oder verwerfen'); return; } newFreeGame(); };
   $('#btnSettings').onclick = openSettings;
   $('#btnVerify').onclick = () => {
@@ -939,7 +941,30 @@ function stepCard(e, i){
   return `<div class="node"><span class="num">${i + 1}</span><div class="txt"><div class="eyebrow">${head}</div><div class="t1">Ein Song von ${esc(e.toName)}</div><div class="t2">${esc(e.via.text)}</div></div>
     ${i === 0 ? '<button class="btn primary" data-artist style="min-height:38px;padding:8px 12px">Songs suchen</button>' : ''}</div>`;
 }
-function openHints(){
+/* Gefundenen Weg komplett in die Kette übernehmen */
+async function pickSongBy(a){
+  const used = new Set(game.steps.map(s => s.rec.id));
+  const r = await mb('recording?limit=25&query=' + encodeURIComponent('arid:' + a.id), 'high');
+  const list = dedupeRecs((r.recordings || []).map(recPick)).filter(x => !used.has(x.id) && x.artists.some(y => y.id === a.id));
+  return list.find(x => x.artists.length === 1) || list[0] || null;
+}
+async function applyPath(p, onStep){
+  batchRunning = true; let added = 0;
+  try{
+    for(let i = 0; i < p.length; i++){
+      const e = p[i];
+      if(!game || game.won) break;
+      onStep && onStep(i, p.length, e.toName);
+      const rec = e.via.type === 'feat' ? { ...e.via.rec } : await pickSongBy({ id:e.to, name:e.toName });
+      if(!rec){ toast(`Kein Song von ${e.toName} gefunden. Ab hier bitte selbst weiterbauen.`); break; }
+      if(!(await tryAdd(rec))) break;
+      added++;
+    }
+  }finally{ batchRunning = false; }
+  if(game && !game.won && view === 'game'){ render(); runSearch(true); }
+  return added;
+}
+function openHints(opts = {}){
   if(!game || game.won) return;
   if(game.free) return openNeighborHints();
   const starts = anchors().filter(a => a.id);
@@ -962,10 +987,21 @@ function openHints(){
       <div id="lv1" ${level >= 1 ? '' : 'hidden'}><p>${nextText}</p></div>
       <div id="lv2" ${level >= 2 ? '' : 'hidden'}>${stepCard(first, 0)}</div>
       <div id="lv3" ${level >= 3 ? '' : 'hidden'}><div class="chain">${p.map((e, i) => (i ? `<div class="link ${e.via.type === 'band' ? 'band' : ''}"><span class="bar"></span><span class="lbl">${e.via.type === 'band' ? esc(e.via.text) : 'gemeinsam: ' + esc(e.fromName)}</span></div>` : '') + stepCard(e, i)).join('')}</div></div>
-      <button class="btn" id="hintMore" ${level >= 3 ? 'hidden' : ''}>${['Kleiner Tipp: welcher Künstler?', 'Nächsten Song zeigen', 'Ganzen Weg zeigen'][level] || ''}</button>`;
+      <button class="btn" id="hintMore" ${level >= 3 ? 'hidden' : ''}>${['Kleiner Tipp: welcher Künstler?', 'Nächsten Song zeigen', 'Ganzen Weg zeigen'][level] || ''}</button>
+      <button class="btn ghost" id="hintSolve">Komplette Kette ausgeben</button>
+      <p class="muted small" style="margin-top:-4px">Hängt alle Songs bis zum Ziel an. Das Ergebnis wird als „von der App gelöst“ markiert.</p>`;
     $('#hintMore').onclick = () => { level++; countHint(); showPath(p); };
+    $('#hintSolve').onclick = () => solve(p);
     $$('#hintBody [data-use]').forEach(b => b.onclick = () => useSong({ ...first.via.rec }));
     $$('#hintBody [data-artist]').forEach(b => b.onclick = () => searchArtistSongs({ id:first.to, name:first.toName }));
+  };
+  const solve = async p => {
+    game.solved = true; LS.set('game', game);
+    body().innerHTML = `<div class="busy"><span class="spin"></span><span id="solveProg">Baue die Kette …</span></div>`;
+    $('#hintClose').hidden = true;
+    const added = await applyPath(p, (i, n, name) => { const el = $('#solveProg'); if(el) el.textContent = `Song ${i + 1} von ${n}: weiter zu ${name}`; });
+    closeSheet();
+    if(game && !game.won) toast(added ? `${added} Songs angehängt, das Ziel ist noch nicht erreicht` : 'Die Kette konnte nicht automatisch erweitert werden');
   };
   const showNone = async () => {
     body().innerHTML = `<p class="muted small">In ${st.expanded} geprüften Künstlern noch kein Weg zu ${esc(game.ch.target.name)} gefunden${st.done ? ', und weitere Verbindungen gibt es in MusicBrainz nicht' : ''}.</p>
@@ -986,6 +1022,7 @@ function openHints(){
     try{
       const p = st.path || await searchPath(st, hintOpts(), 25, (n, name) => { const el = $('#hintProg'); if(el) el.textContent = `${n} Künstler geprüft, gerade: ${name}`; }, () => cancelled);
       if(cancelled || !$('#hintBody')) return;
+      if(p && opts.auto) return solve(p);
       p ? showPath(p) : showNone();
     }catch(e){ if(!cancelled && $('#hintBody')) body().innerHTML = `<div class="verdict bad">${esc(e.message)}</div>`; }
   };
@@ -1057,12 +1094,12 @@ function resultView(){
   const claims = game.steps.filter(x => x.link.type === 'claim').length;
   return `
   <div class="hero">
-    <span class="eyebrow">Aufgabe erfüllt</span>
+    <span class="eyebrow">${game.solved ? 'Von der App gelöst' : 'Aufgabe erfüllt'}</span>
     <h1>${esc(game.ch.start.name)} → ${esc(game.ch.target.name)}</h1>
     <div class="big">${game.steps.length}</div>
     <span class="muted">Songs · ${fmtTime(game.finishedAt - game.startedAt)}${game.hints ? ` · ${game.hints} Tipp${game.hints === 1 ? '' : 's'}` : ''}</span>
   </div>
-  ${game.best ? `<div class="verdict ${game.steps.length < game.best ? 'ok' : game.steps.length === game.best ? 'claim' : 'bad'}">${game.steps.length < game.best ? `Rekord geschlagen: ${game.best - game.steps.length} Song${game.best - game.steps.length === 1 ? '' : 's'} weniger als die Vorgabe von ${game.best}` : game.steps.length === game.best ? `Gleichstand mit der Vorgabe von ${game.best} Songs` : `Vorgabe von ${game.best} Songs nicht geschafft`}</div>` : ''}
+  ${game.best && !game.solved ? `<div class="verdict ${game.steps.length < game.best ? 'ok' : game.steps.length === game.best ? 'claim' : 'bad'}">${game.steps.length < game.best ? `Rekord geschlagen: ${game.best - game.steps.length} Song${game.best - game.steps.length === 1 ? '' : 's'} weniger als die Vorgabe von ${game.best}` : game.steps.length === game.best ? `Gleichstand mit der Vorgabe von ${game.best} Songs` : `Vorgabe von ${game.best} Songs nicht geschafft`}</div>` : ''}
   <div class="verdict ${claims ? 'claim' : 'ok'}">${claims ? `${claims} von ${game.steps.length} Gliedern sind nicht in MusicBrainz belegt` : 'Alle Glieder sind in MusicBrainz belegt'}</div>
   ${chainHtml(game, false)}
   <div class="panel">
@@ -1088,7 +1125,7 @@ function linkPlain(l){
   return '';
 }
 function resultText(){
-  const lines = [`🎸 Aufgabe erfüllt: ${game.ch.start.name} → ${game.ch.target.name}`, `${game.steps.length} Songs in ${fmtTime(game.finishedAt - game.startedAt)}${game.hints ? ` (${game.hints} Tipp${game.hints === 1 ? '' : 's'} genutzt)` : ''}`, ''];
+  const lines = [`🎸 ${game.solved ? 'Von der App gelöst' : 'Aufgabe erfüllt'}: ${game.ch.start.name} → ${game.ch.target.name}`, `${game.steps.length} Songs in ${fmtTime(game.finishedAt - game.startedAt)}${game.hints ? ` (${game.hints} Tipp${game.hints === 1 ? '' : 's'} genutzt)` : ''}`, ''];
   game.steps.forEach((st, i) => { const lp = linkPlain(st.link); if(lp) lines.push('   ' + lp); lines.push(`${i + 1}. ${st.rec.title} – ${st.rec.credit}`); });
   lines.push('', 'Prüfen: ' + BASE + '#k=' + chainCode(game));
   return lines.join('\n');
