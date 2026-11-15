@@ -35,7 +35,7 @@ jobs:
       - name: Benötigte Tabellen entpacken
         run: |
           cd /mnt/mb
-          lbzip2 -dc mbdump.tar.bz2 | tar -xf - mbdump/link_type mbdump/link mbdump/artist mbdump/artist_credit_name mbdump/recording mbdump/l_artist_artist
+          lbzip2 -dc mbdump.tar.bz2 | tar -xf - mbdump/link_type mbdump/link mbdump/artist mbdump/artist_credit_name mbdump/recording mbdump/l_artist_artist mbdump/l_artist_recording
           rm mbdump.tar.bz2
           ls -la mbdump
       - name: Netz bauen

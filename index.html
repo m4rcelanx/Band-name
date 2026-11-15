@@ -217,12 +217,16 @@ async function findArtist(name, country){
   return exact(l2) || l2[0] || null;
 }
 function recPick(r){ const out = recPickRaw(r); recordRec(out); return out; }
+/* Remixe zählen nicht: erkannt am Titel oder an der Beschreibung der Aufnahme */
+const REMIX_RE = /\b(re-?mix(es|ed)?|rmx|re-?work(ed)?|re-?edit|bootleg|mash-?up)\b/i;
+const MIX_RE = /[\(\[][^\)\]]*\bmix(ed)?\b[^\)\]]*[\)\]]|\s[-–]\s.*\bmix\b/i;
+const isRemixTitle = (title, comment) => REMIX_RE.test(title || '') || (MIX_RE.test(title || '') && !/\boriginal mix\b/i.test(title)) || REMIX_RE.test(comment || '');
 function recPickRaw(r){
   const ac = r['artist-credit'] || [];
   return { id:r.id, title:r.title,
     artists:ac.filter(c => c.artist).map(c => ({ id:c.artist.id, name:c.artist.name })),
     credit:ac.map(c => (c.name || (c.artist && c.artist.name) || '') + (c.joinphrase || '')).join(''),
-    year:(r['first-release-date'] || '').slice(0, 4), video:!!r.video };
+    year:(r['first-release-date'] || '').slice(0, 4), video:!!r.video, remix:isRemixTitle(r.title, r.disambiguation) };
 }
 async function searchRecordings(query, offset){
   const r = await mb(`recording?limit=100&offset=${offset}&query=` + encodeURIComponent(query), 'high', 'search');
@@ -280,7 +284,7 @@ async function spOembed(id){
 }
 function dedupeRecs(list){
   const seen = new Set();
-  return list.filter(r => { if(r.video) return false; const k = normTitle(r.title) + '|' + r.artists.map(a => a.id).sort().join(','); if(seen.has(k)) return false; seen.add(k); return true; });
+  return list.filter(r => { if(r.video || r.remix) return false; const k = normTitle(r.title) + '|' + r.artists.map(a => a.id).sort().join(','); if(seen.has(k)) return false; seen.add(k); return true; });
 }
 async function mbCandidates(title, artist){
   let q = `recording:"${luc(cleanTitle(title))}"`;
@@ -322,6 +326,7 @@ async function resolveSpotify(id, ctx){
   const od = await odesli(spTrackUrl(id));
   let title = od ? od.title : null, names = od ? od.artists : [];
   if(!title){ const oe = await spOembed(id); title = oe ? oe.title : null; }
+  if(title && isRemixTitle(title)){ toast(`„${title}“ ist ein Remix und zählt nicht`); return null; }
   if(title) names = [...new Set([...names, ...featNames(title)])];
   let cands = [];
   if(title){
@@ -436,7 +441,7 @@ function collabsOf(id){
     }
     const out = new Map();
     recs.forEach(rec => {
-      if(rec.video || rec.artists.length < 2) return;
+      if(rec.video || rec.remix || rec.artists.length < 2) return;
       rec.artists.forEach(a => {
         if(!a.id || a.id === id) return;
         const e = out.get(a.id); if(e){ if(e.recIds.has(rec.id)) return; e.recIds.add(rec.id); e.n++; } else out.set(a.id, { artist:a, rec, n:1, recIds:new Set([rec.id]) });
@@ -686,7 +691,7 @@ function recordRels(info){
   });
 }
 function recordRec(rec){
-  if(!rec || !rec.id || rec.video) return;
+  if(!rec || !rec.id || rec.video || rec.remix) return;
   const as = rec.artists.filter(a => a.id);
   for(let x = 0; x < as.length; x++) for(let y = x + 1; y < as.length; y++) recordLive(as[x], as[y], 2);
 }
@@ -908,6 +913,7 @@ async function tryAdd(rec, rowEl){
   const s = settings();
   if(s.maxSongs && game.steps.length >= s.maxSongs){ toast(`Limit von ${s.maxSongs} Songs erreicht. Nimm einen Schritt zurück.`); return false; }
   if(isDuplicate(rec)){ toast('Der Song ist schon in deiner Kette'); return false; }
+  if(rec.remix){ toast('Remixe zählen nicht. Nimm die Originalversion.'); return false; }
   if(game.free && !game.steps.length){
     if(!rec.artists.some(a => a.id)){ toast('Der erste Song braucht einen Künstler aus MusicBrainz'); return false; }
     addStep(rec, { type:'first' }); return true;
@@ -1266,7 +1272,7 @@ async function runSearch(reset){
     if(seq !== search.seq) return;
     const key = r => r.title.toLowerCase().replace(/\s*[\(\[].*?(live|remaster|version|edit|mix|demo|acoustic).*?[\)\]]/gi, '').trim() + '|' + r.artists.map(a => a.id).sort().join(',');
     const seen = new Set(search.items.map(key));
-    const fresh = items.filter(r => !r.video && !seen.has(key(r)) && (seen.add(key(r)), true));
+    const fresh = items.filter(r => !r.video && !r.remix && !seen.has(key(r)) && (seen.add(key(r)), true));
     if(search.chip && !search.q.trim()) fresh.sort((a, b) => b.artists.length - a.artists.length);
     search.items = search.items.concat(fresh); search.total = total; search.offset += 100;
   }catch(e){ handleErr(e); }
@@ -1560,7 +1566,8 @@ async function startVerify(code){
         rec = { id:null, title:oe ? oe.title : 'Spotify-Song', artists:arts, credit:arts.map(a => a.name).join(', '), year:'', spotifyId:t.sp, noMb:true };
       }
       verify.done++; updateVerifyProgress();
-      let link = await findLink(prev, rec.artists, s);
+      let link = rec.remix ? { type:'bad', text:'Remix, zählt nicht' } : await findLink(prev, rec.artists, s);
+      if(rec.remix) verify.problems++;
       if(!link){
         if(t.claim){ link = { type:'claim' }; verify.claims++; }
         else { link = { type:'bad', text:'keine Verbindung in MusicBrainz' }; verify.problems++; }

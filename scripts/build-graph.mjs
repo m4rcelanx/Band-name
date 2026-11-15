@@ -1,7 +1,7 @@
 // Baut das Musiknetz für die Band-Kette ausschließlich aus dem MusicBrainz-Datenexport.
 // Damit enthält das Netz nur Verbindungen, die in MusicBrainz belegt sind:
 //   - Bandbeziehungen aus l_artist_artist (Mitglied, Kollaboration, dieselbe Person)
-//   - Feat-Verbindungen nur aus echten Aufnahmen (keine Videos), deren Credit mehrere Künstler nennt
+//   - Feat-Verbindungen nur aus echten Aufnahmen (keine Videos, keine Remixe), deren Credit mehrere Künstler nennt
 // Aufruf: node scripts/build-graph.mjs <Ordner mit mbdump-Tabellen> [Export-Name]
 // Ausgabe: graph.json im aktuellen Ordner.
 
@@ -21,6 +21,11 @@ const LINK_GIDS = {
 };
 const LINK_NAMES = { 'member of band':1, 'collaboration':3, 'is person':4 };
 
+// Remixe zählen nicht: erkannt am Titel, an der Beschreibung oder an einer Remixer-Beziehung
+const REMIX_RE = /\b(re-?mix(es|ed)?|rmx|re-?work(ed)?|re-?edit|bootleg|mash-?up)\b/i;
+const MIX_RE = /[\(\[][^\)\]]*\bmix(ed)?\b[^\)\]]*[\)\]]|\s[-–]\s.*\bmix\b/i;
+const isRemix = (title, comment) => REMIX_RE.test(title) || (MIX_RE.test(title) && !/\boriginal mix\b/i.test(title)) || REMIX_RE.test(comment || '');
+
 const t0 = Date.now();
 const log = (...a) => console.log(`[${Math.round((Date.now() - t0) / 1000)}s]`, ...a);
 const unesc = s => s.indexOf('\\') < 0 ? s : s.replace(/\\(.)/g, (_, c) => c === 't' ? '\t' : c === 'n' ? '\n' : c === 'r' ? '\r' : c);
@@ -36,19 +41,27 @@ async function each(table, fn){
 }
 
 // 1. Beziehungstypen
-const typeCode = new Map();
+const typeCode = new Map(), remixerTypes = new Set();
 await each('link_type', c => {
   const code = LINK_GIDS[c[3]] || (c[4] === 'artist' && c[5] === 'artist' ? LINK_NAMES[c[6]] : 0);
   if(code) typeCode.set(+c[0], code);
+  if(c[4] === 'artist' && c[5] === 'recording' && /remix/i.test(c[6])) remixerTypes.add(+c[0]);
 });
+log(`Remixer-Beziehungstypen: ${remixerTypes.size}`);
 if(typeCode.size < 3) throw new Error('Beziehungstypen nicht gefunden: ' + [...typeCode.entries()].join(' '));
 
 // 2. Konkrete Beziehungen (mit "beendet")
-const linkCode = new Map();
+const linkCode = new Map(), remixerLinks = new Set();
 await each('link', c => {
   const code = typeCode.get(+c[1]);
   if(code) linkCode.set(+c[0], code | (c[10] === 't' ? 8 : 0));
+  if(remixerTypes.has(+c[1])) remixerLinks.add(+c[0]);
 });
+
+// Aufnahmen mit eingetragenem Remixer
+const remixRec = new Set();
+await each('l_artist_recording', c => { if(remixerLinks.has(+c[1])) remixRec.add(+c[3]); });
+log(`${remixRec.size} Aufnahmen mit Remixer`);
 
 // 3. Künstler
 let maxId = 0;
@@ -68,13 +81,17 @@ await each('artist_credit_name', c => {
 // 5. Aufnahmen: Anzahl je Künstler und genutzte Mehrfach-Credits (nur echte Aufnahmen, keine Videos)
 const recCount = new Uint32Array(maxId + 1);
 const creditUse = new Map();
+let remixSkipped = 0;
 await each('recording', c => {
   if(c[8] === 't') return;
+  if(remixRec.has(+c[0]) || isRemix(c[2], c[5])){ remixSkipped++; return; }
   const cr = +c[3];
   const m = creditMulti.get(cr);
   if(m){ for(const a of m) recCount[a]++; creditUse.set(cr, (creditUse.get(cr) || 0) + 1); }
   else { const a = creditFirst.get(cr); if(a !== undefined) recCount[a]++; }
 });
+
+log(`${remixSkipped} Remix-Aufnahmen ausgelassen`);
 
 // 6. Auswahl: die Künstler mit den meisten Aufnahmen; jeder ausgewählte Künstler hat mindestens eine Aufnahme
 const cand = [];
