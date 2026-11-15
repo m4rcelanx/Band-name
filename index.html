@@ -224,7 +224,12 @@ body.hasplayer .toast{bottom:calc(220px + env(safe-area-inset-bottom,0px))}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .grid2 .btn{min-height:44px;padding:10px;font-size:14px}
 .actions{gap:10px}
-.levelpick{display:flex;flex-direction:column;gap:8px}
+.lvlchoice{display:flex;flex-direction:column;gap:8px}
+.lvlbtn{display:flex;align-items:center;gap:12px;background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:14px;text-align:left;color:var(--fg);min-height:60px}
+.lvlbtn.on{border-color:var(--accent)}
+.lvlbtn .lvl{min-width:72px;text-align:center}
+.lvlbtn .txt{display:flex;flex-direction:column}
+.lvlbtn small{color:var(--muted);font-size:12px}
 .seg4{grid-template-columns:repeat(4,1fr)}
 .seg4 button{display:flex;flex-direction:column;align-items:center;gap:1px;padding:7px 2px}
 .seg4 button b{font-size:13px}
@@ -1906,11 +1911,8 @@ function homeView(){
     <div id="dailyBox"><div class="busy"><span class="spin"></span><span>Wird vorbereitet …</span></div></div>
   </div>
   <div class="panel">
-    <span class="eyebrow">Eigene Challenge</span>
-    <div class="levelpick"><span class="small muted">Schwierigkeit für zufällige Bands</span>
-      <div class="seg seg4" role="radiogroup" aria-label="Schwierigkeit">${LEVELS.map(l => `<button role="radio" class="${curLevel().id === l.id ? 'on' : ''}" aria-checked="${curLevel().id === l.id}" data-level="${l.id}"><b>${l.name}</b><small>${l.hint}</small></button>`).join('')}</div>
-      <button class="btn small dicebtn" id="btnRandom">${ICON.dice} Zufällige Bands: ${esc(curLevel().name)}</button>
-    </div>
+    <div class="rankrow"><span class="eyebrow">Eigene Challenge</span></div>
+    <button class="btn small dicebtn" id="btnRandom">${ICON.dice} Zufällige Bands</button>
     <div class="vs">${pickBox('start', draft.start)}<button class="swap" id="btnSwap" aria-label="Start und Ziel tauschen" ${draft.start || draft.target ? '' : 'disabled'}>${ICON.swap}</button>${pickBox('target', draft.target)}</div>
     ${draft.duel ? `<p class="small">Duell gegen <b>${esc(draft.duel.name)}</b>: ${draft.duel.songs} Songs in ${fmtTime(draft.duel.secs * 1000)}. Weniger Songs gewinnen, bei Gleichstand die Zeit.</p>` : draft.best ? `<p class="small">Zu schlagen: <b>${draft.best} Songs</b></p>` : ''}
     ${ready ? '<div class="levelinfo" id="levelInfo"><span class="spin"></span><span class="small muted">Schwierigkeit wird berechnet …</span></div>' : ''}
@@ -1964,7 +1966,7 @@ async function fillDaily(){
 function bindHome(){
   $$('[data-pick]').forEach(b => b.onclick = () => openArtistSheet(b.dataset.pick));
   $$('[data-hist]').forEach(b => b.onclick = () => { const x = LS.get('history', [])[+b.dataset.hist]; if(x && x.code) startVerify(x.code); });
-  $('#btnRandom').onclick = randomChallenge;
+  $('#btnRandom').onclick = () => openRandomSheet();
   $('#race').onchange = e => { draft.race = e.target.checked; };
   const meta = () => ({ duel:draft.duel || null, timeLimit:draft.race ? 180000 : null, par:draftPar() || null });
   $$('[data-level]').forEach(b => b.onclick = () => { LS.set('level', b.dataset.level); render(); });
@@ -1997,6 +1999,23 @@ async function startPreset(p, btn){
     if(!a || !b){ toast('Band nicht in MusicBrainz gefunden'); tag.textContent = 'Spielen'; return; }
     newGame(a, b);
   }catch(e){ handleErr(e); tag.textContent = 'Spielen'; }
+}
+/* Zufällige Bands: erst die Schwierigkeit wählen */
+function openRandomSheet(after){
+  const cur = curLevel().id;
+  sheet(`<h2>Wie schwer soll’s werden?</h2>
+    <p class="muted small">Die App sucht zwei bekannte Bands, deren kürzester Weg genau so lang ist.</p>
+    <div class="lvlchoice">${LEVELS.map(l => `<button class="lvlbtn ${l.id === cur ? 'on' : ''}" data-lv="${l.id}">
+      ${levelTag(l.lo)}<span class="txt"><b>${l.hint.replace('Par', 'Kürzester Weg:')} Song${l.hi === 1 ? '' : 's'}</b><small>${l.bonus ? '+' + l.bonus + ' Bonuspunkte' : 'Zum Reinkommen'}</small></span></button>`).join('')}</div>
+    <button class="btn ghost" data-close>Abbrechen</button>`);
+  $$('[data-lv]').forEach(b => b.onclick = async () => {
+    LS.set('level', b.dataset.lv);
+    $$('[data-lv]').forEach(x => x.disabled = true);
+    b.querySelector('small').textContent = 'Suche passende Bands …';
+    await randomChallenge();
+    closeSheet();
+    if(after) after(); else render();
+  });
 }
 async function randomChallenge(){
   const btn = $('#btnRandom') || $('#pRandom'); if(btn){ btn.disabled = true; btn.textContent = 'Suche …'; }
@@ -2796,7 +2815,7 @@ function bindParty(){
   const party = LS.get('party', null);
   if(!party){
     $$('[data-pick]').forEach(b => b.onclick = () => openArtistSheet(b.dataset.pick));
-    $('#pRandom').onclick = async () => { await randomChallenge(); view = 'party'; render(); };
+    $('#pRandom').onclick = () => openRandomSheet(() => { view = 'party'; render(); });
     $('#pStart').onclick = async () => {
       const teams = $('#pTeams').value.split('\n').map(s => s.trim()).filter(Boolean).slice(0, 8);
       if(teams.length < 2){ toast('Mindestens zwei Teams eintragen'); return; }
