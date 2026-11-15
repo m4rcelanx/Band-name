@@ -420,69 +420,105 @@ async function findLink(prev, next, opts, prio = 'high'){
 /* Knoten sind Künstler. Kanten: gemeinsamer Song (Feat) oder Bandmitgliedschaft.
    Gesucht wird von beiden Seiten gleichzeitig, bis sich die Suchräume treffen. */
 const collabCache = new Map();
-/* Feat-Partner eines Künstlers, sortiert nach Häufigkeit: wer öfter mitspielt, ist ein besserer Kandidat */
+/* Feat-Partner aus MusicBrainz. Zuerst gezielt Aufnahmen, deren Credit ein Verbindungswort enthält
+   (feat., with, x, vs., und …), bei zu wenig Treffern zusätzlich beliebige Aufnahmen.
+   Sortiert nach Häufigkeit: wer öfter mitspielt, ist ein besserer Kandidat. */
+const JOIN_Q = '(artist:feat OR artist:featuring OR artist:ft OR artist:with OR artist:x OR artist:vs OR artist:versus OR artist:und OR artist:and OR artist:mit OR artist:meets OR artist:presents)';
 function collabsOf(id){
   if(collabCache.has(id)) return collabCache.get(id);
-  const p = mb('recording?limit=100&query=' + encodeURIComponent('arid:' + id), 'high').then(r => {
+  const p = (async () => {
+    const r1 = await mb('recording?limit=100&query=' + encodeURIComponent(`arid:${id} AND ${JOIN_Q}`), 'high');
+    let recs = (r1.recordings || []).map(recPick);
+    if(recs.filter(r => r.artists.length > 1).length < 8){
+      const r2 = await mb('recording?limit=100&query=' + encodeURIComponent('arid:' + id), 'high');
+      recs = recs.concat((r2.recordings || []).map(recPick));
+    }
     const out = new Map();
-    (r.recordings || []).map(recPick).forEach(rec => {
+    recs.forEach(rec => {
       if(rec.video || rec.artists.length < 2) return;
       rec.artists.forEach(a => {
         if(!a.id || a.id === id) return;
-        const e = out.get(a.id); if(e) e.n++; else out.set(a.id, { artist:a, rec, n:1 });
+        const e = out.get(a.id); if(e){ if(e.recIds.has(rec.id)) return; e.recIds.add(rec.id); e.n++; } else out.set(a.id, { artist:a, rec, n:1, recIds:new Set([rec.id]) });
       });
     });
     return [...out.values()].sort((x, y) => y.n - x.n);
-  });
+  })();
   collabCache.set(id, p); p.catch(() => collabCache.delete(id));
   return p;
 }
 
-/* Bandmitgliedschaften gesammelt aus Wikidata (verknüpft über die MusicBrainz-ID).
-   Nur zum schnellen Finden; jeder gefundene Band-Link wird danach in MusicBrainz gegengeprüft. */
-const wdCache = new Map(); let wdFails = 0;
-async function wdFetch(ids){
-  if(wdFails >= 2) return;
-  const need = [...new Set(ids)].filter(id => MBID.test(id) && !wdCache.has(id)).slice(0, 40);
-  if(!need.length) return;
-  const q = `SELECT ?mb ?omb ?oLabel ?dir ?start ?end WHERE {
-    VALUES ?mb { ${need.map(i => `"${i}"`).join(' ')} }
-    ?a wdt:P434 ?mb .
-    OPTIONAL {
-      { ?a p:P463 ?st . ?st ps:P463 ?o . BIND("forward" AS ?dir) } UNION
-      { ?o p:P463 ?st . ?st ps:P463 ?a . BIND("backward" AS ?dir) } UNION
-      { ?a p:P527 ?st . ?st ps:P527 ?o . BIND("backward" AS ?dir) } UNION
-      { ?o p:P527 ?st . ?st ps:P527 ?a . BIND("forward" AS ?dir) }
-      ?o wdt:P434 ?omb .
-      OPTIONAL { ?st pq:P580 ?start } OPTIONAL { ?st pq:P582 ?end }
-    }
-    SERVICE wikibase:label { bd:serviceParam wikibase:language "de,en". }
-  }`;
+/* Wikidata, verknüpft über die MusicBrainz-ID: Bandmitgliedschaften und gemeinsame Songs vieler Künstler
+   in einer Abfrage. Nur zum schnellen Finden; alles wird vor der Anzeige in MusicBrainz belegt. */
+const wdCache = new Map(), wdColCache = new Map(); let wdFails = 0, wdColFails = 0;
+async function sparql(q){
   const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
-  const timer = ctl ? setTimeout(() => ctl.abort(), 15000) : null;
+  const timer = ctl ? setTimeout(() => ctl.abort(), 20000) : null;
   try{
     const r = await fetch('https://query.wikidata.org/sparql?format=json&query=' + encodeURIComponent(q), { headers:{ Accept:'application/sparql-results+json' }, signal:ctl ? ctl.signal : undefined });
     if(!r.ok) throw new Error('Wikidata ' + r.status);
-    const j = await r.json();
+    return (await r.json()).results.bindings;
+  }finally{ if(timer) clearTimeout(timer); }
+}
+const yr = v => v ? v.value.slice(0, 4) : '';
+async function wdFetch(ids){
+  if(wdFails >= 3) return;
+  const need = [...new Set(ids)].filter(id => MBID.test(id) && !wdCache.has(id)).slice(0, 40);
+  if(!need.length) return;
+  try{
+    const rows = await sparql(`SELECT ?mb ?omb ?oLabel ?dir ?start ?end WHERE {
+      VALUES ?mb { ${need.map(i => `"${i}"`).join(' ')} }
+      ?a wdt:P434 ?mb .
+      OPTIONAL {
+        { ?a p:P463 ?st . ?st ps:P463 ?o . BIND("forward" AS ?dir) } UNION
+        { ?o p:P463 ?st . ?st ps:P463 ?a . BIND("backward" AS ?dir) } UNION
+        { ?a p:P527 ?st . ?st ps:P527 ?o . BIND("backward" AS ?dir) } UNION
+        { ?o p:P527 ?st . ?st ps:P527 ?a . BIND("forward" AS ?dir) }
+        ?o wdt:P434 ?omb .
+        OPTIONAL { ?st pq:P580 ?start } OPTIONAL { ?st pq:P582 ?end }
+      }
+      SERVICE wikibase:label { bd:serviceParam wikibase:language "de,en". }
+    }`);
     need.forEach(id => wdCache.set(id, { found:false, rels:[] }));
     const seen = new Set();
-    for(const b of j.results.bindings){
+    for(const b of rows){
       const mb = b.mb.value; const e = wdCache.get(mb); if(!e) continue; e.found = true;
-      if(!b.omb || !b.dir) continue;
-      const k = mb + '>' + b.omb.value + b.dir.value; if(seen.has(k) || b.omb.value === mb) continue; seen.add(k);
-      const y = v => v ? v.value.slice(0, 4) : '';
+      if(!b.omb || !b.dir || b.omb.value === mb) continue;
+      const k = mb + '>' + b.omb.value + b.dir.value; if(seen.has(k)) continue; seen.add(k);
       e.rels.push({ type:'member of band', dir:b.dir.value, artist:{ id:b.omb.value, name:b.oLabel ? b.oLabel.value : '?' },
-        begin:y(b.start), end:y(b.end), ended:!!b.end, src:'wd' });
+        begin:yr(b.start), end:yr(b.end), ended:!!b.end, src:'wd' });
     }
     wdFails = 0;
   }catch(e){ wdFails++; }
-  finally{ if(timer) clearTimeout(timer); }
 }
+async function wdCollabFetch(ids){
+  if(wdColFails >= 3) return;
+  const need = [...new Set(ids)].filter(id => MBID.test(id) && !wdColCache.has(id)).slice(0, 30);
+  if(!need.length) return;
+  try{
+    const rows = await sparql(`SELECT ?mb ?omb ?oLabel ?sLabel WHERE {
+      VALUES ?mb { ${need.map(i => `"${i}"`).join(' ')} }
+      VALUES ?t { wd:Q7366 wd:Q134556 wd:Q105543609 wd:Q2188189 }
+      ?a wdt:P434 ?mb .
+      ?s wdt:P175 ?a ; wdt:P175 ?o ; wdt:P31 ?t .
+      FILTER(?o != ?a)
+      ?o wdt:P434 ?omb .
+      SERVICE wikibase:label { bd:serviceParam wikibase:language "de,en". }
+    } LIMIT 4000`);
+    need.forEach(id => wdColCache.set(id, []));
+    for(const b of rows){
+      const list = wdColCache.get(b.mb.value); if(!list || !b.omb) continue;
+      const e = list.find(x => x.artist.id === b.omb.value);
+      if(e) e.n++; else list.push({ artist:{ id:b.omb.value, name:b.oLabel ? b.oLabel.value : '?' }, title:b.sLabel ? b.sLabel.value : '', n:1 });
+    }
+    wdColFails = 0;
+  }catch(e){ wdColFails++; }
+}
+const wdPrefetch = ids => Promise.all([wdFetch(ids), wdCollabFetch(ids)]);
 
 const relDone = new Map();
 const badEdges = new Set();
 async function neighbors(id, name, opts){
-  const out = [];
+  const out = [], have = new Set();
   if(opts.bandLinks){
     const wd = wdCache.get(id), mbInfo = relDone.get(id);
     let rels = [];
@@ -490,19 +526,24 @@ async function neighbors(id, name, opts){
     if(mbInfo) mbInfo.rels.forEach(r => { if(!rels.some(x => x.artist.id === r.artist.id)) rels.push({ ...r, src:'mb' }); });
     if(!(wd && wd.found) && !mbInfo){ const info = await artistInfo(id, 'high'); info.rels.forEach(r => rels.push({ ...r, src:'mb' })); }
     rels.forEach(r => {
-      if(badEdges.has(id + '>' + r.artist.id)) return;
+      if(badEdges.has(id + '>' + r.artist.id) || have.has(r.artist.id)) return; have.add(r.artist.id);
       out.push({ artist:r.artist, cost:0.8, via:{ type:'band', src:r.src, from:id, to:r.artist.id, text:relText({ id, name }, r) } });
     });
   }
-  const cs = (await collabsOf(id)).filter(c => !opts.usedRecs.has(c.rec.id)).slice(0, 40);
-  cs.forEach((c, i) => out.push({ artist:c.artist, cost:1 + i * 0.01, via:{ type:'feat', rec:c.rec } }));
+  const cs = (await collabsOf(id)).filter(c => !opts.usedRecs.has(c.rec.id)).slice(0, 50);
+  cs.forEach((c, i) => { if(have.has(c.artist.id)) return; have.add(c.artist.id);
+    out.push({ artist:c.artist, cost:1 - Math.min(0.3, (c.n - 1) * 0.05) + i * 0.005, via:{ type:'feat', src:'mb', rec:c.rec } }); });
+  (wdColCache.get(id) || []).forEach(c => {
+    if(have.has(c.artist.id) || badEdges.has('f:' + id + '>' + c.artist.id)) return; have.add(c.artist.id);
+    out.push({ artist:c.artist, cost:0.9, via:{ type:'feat', src:'wd', from:id, to:c.artist.id, title:c.title, rec:null } });
+  });
   return out;
 }
 function newHintState(starts, target){
   const A = new Map(), B = new Map();
   starts.forEach(a => A.set(a.id, { prev:null, via:null, name:a.name, cost:0 }));
   B.set(target.id, { next:null, via:null, name:target.name, cost:0 });
-  return { A, B, qA:starts.map(a => a.id), qB:[target.id], eA:0, eB:0, expanded:0, done:false, path:null };
+  return { A, B, qA:new Set(starts.map(a => a.id)), qB:new Set([target.id]), eA:0, eB:0, expanded:0, done:false, path:null };
 }
 function buildPath(st, meet){
   const left = []; let cur = meet;
@@ -511,46 +552,74 @@ function buildPath(st, meet){
   while(st.B.get(cur).next){ const e = st.B.get(cur); right.push({ from:cur, fromName:e.name, to:e.next, toName:st.B.get(e.next).name, via:e.via }); cur = e.next; }
   return left.concat(right);
 }
-function popMin(q, map){ let bi = 0; for(let i = 1; i < q.length; i++) if(map.get(q[i]).cost < map.get(q[bi]).cost) bi = i; return q.splice(bi, 1)[0]; }
+function popMin(q, map){ let best = null, bc = Infinity; for(const id of q){ const c = map.get(id).cost; if(c < bc){ bc = c; best = id; } } q.delete(best); return best; }
 async function prefetchWd(st){
-  const pick = (q, map) => q.filter(id => !wdCache.has(id)).sort((x, y) => map.get(x).cost - map.get(y).cost).slice(0, 20);
+  const pick = (q, map) => [...q].filter(id => !wdCache.has(id) || !wdColCache.has(id)).sort((x, y) => map.get(x).cost - map.get(y).cost).slice(0, 15);
   const ids = [...pick(st.qA, st.A), ...pick(st.qB, st.B)];
-  if(ids.length) await wdFetch(ids);
+  if(ids.length) await wdPrefetch(ids);
 }
-/* Beste-zuerst-Suche von beiden Seiten: günstigste Kandidaten zuerst, Band-Links sind billiger als Feats */
-async function searchPath(st, opts, budget, onProgress, isCancelled){
+/* Beste-zuerst-Suche von beiden Seiten. Band-Links und häufige Partner sind billiger;
+   wer von mehreren Künstlern aus erreichbar ist, rückt nach vorn (Brückenkandidat). */
+async function searchPath(st, opts, budget, onProgress, isStopped){
   for(const id of st.A.keys()) if(st.B.has(id)){ st.path = buildPath(st, id); return st.path; }
   let n = 0;
-  while(n < budget && (st.qA.length || st.qB.length)){
-    if(isCancelled()) return null;
-    if(opts.bandLinks) await prefetchWd(st);
-    const sideA = st.qA.length > 0 && (st.eA <= st.eB || !st.qB.length);
+  while(n < budget && (st.qA.size || st.qB.size)){
+    if(isStopped()) return null;
+    await prefetchWd(st);
+    const sideA = st.qA.size > 0 && (st.eA <= st.eB || !st.qB.size);
     const q = sideA ? st.qA : st.qB, mine = sideA ? st.A : st.B, other = sideA ? st.B : st.A;
     const id = popMin(q, mine); n++; st.expanded++; if(sideA) st.eA++; else st.eB++;
     const node = mine.get(id);
-    onProgress(st.expanded, node.name);
-    const nb = await neighbors(id, node.name, opts);
+    onProgress(st, node.name);
+    let nb;
+    try{ nb = await neighbors(id, node.name, opts); }catch(e){ if(e.status === 404) continue; throw e; }
     for(const x of nb){
-      const aid = x.artist.id; if(!aid || mine.has(aid)) continue;
+      const aid = x.artist.id; if(!aid) continue;
       const cost = node.cost + x.cost;
+      const ex = mine.get(aid);
+      if(ex){ if(q.has(aid)) ex.cost = Math.max(ex.cost - 0.08, 0.3); continue; }
       mine.set(aid, sideA ? { prev:id, via:x.via, name:x.artist.name, cost } : { next:id, via:x.via, name:x.artist.name, cost });
       if(other.has(aid)){ st.path = buildPath(st, aid); return st.path; }
-      q.push(aid);
+      q.add(aid);
     }
   }
-  if(!st.qA.length && !st.qB.length) st.done = true;
+  if(!st.qA.size && !st.qB.size) st.done = true;
   return null;
 }
-/* Band-Links aus Wikidata vor der Anzeige in MusicBrainz bestätigen */
-async function verifyPath(p){
+/* Jeder Schritt muss in MusicBrainz belegt sein: Band-Links aus Wikidata gegenprüfen,
+   gemeinsame Songs aus Wikidata durch eine MusicBrainz-Aufnahme mit beiden Künstlern ersetzen. */
+async function verifyPath(p, opts){
   for(const e of p){
-    if(e.via.type !== 'band' || e.via.src !== 'wd') continue;
-    const [a, b] = await Promise.all([artistInfo(e.from, 'high'), artistInfo(e.to, 'high')]);
-    const ra = a.rels.find(r => r.artist.id === e.to), rb = b.rels.find(r => r.artist.id === e.from);
-    if(!ra && !rb){ badEdges.add(e.from + '>' + e.to); badEdges.add(e.to + '>' + e.from); return false; }
-    e.via.text = ra ? relText(a, ra) : relText(b, rb); e.via.src = 'mb';
+    if(e.via.type === 'band' && e.via.src === 'wd'){
+      const [a, b] = await Promise.all([artistInfo(e.from, 'high'), artistInfo(e.to, 'high')]);
+      const ra = a.rels.find(r => r.artist.id === e.to), rb = b.rels.find(r => r.artist.id === e.from);
+      if(!ra && !rb){ badEdges.add(e.from + '>' + e.to); badEdges.add(e.to + '>' + e.from); return false; }
+      e.via.text = ra ? relText(a, ra) : relText(b, rb); e.via.src = 'mb';
+    }
+    if(e.via.type === 'feat' && !e.via.rec){
+      const rec = await recWithBoth(e.from, e.to, e.via.title, opts);
+      if(!rec){ badEdges.add('f:' + e.from + '>' + e.to); badEdges.add('f:' + e.to + '>' + e.from); return false; }
+      e.via.rec = rec; e.via.src = 'mb';
+    }
   }
   return true;
+}
+/* Band-Link gefolgt von gemeinsamem Song: der Song enthält das Bandmitglied schon, ein eigener Song entfällt */
+function compressPath(p){
+  const out = [];
+  for(let i = 0; i < p.length; i++){
+    const e = p[i], nx = p[i + 1];
+    if(e.via.type === 'band' && nx && nx.via.type === 'feat' && nx.via.rec && nx.via.rec.artists.some(a => a.id === e.to)){
+      out.push({ from:e.from, fromName:e.fromName, to:nx.to, toName:nx.toName, via:{ ...nx.via, bandText:e.via.text } });
+      i++;
+    } else out.push(e);
+  }
+  return out;
+}
+async function recWithBoth(a, b, title, opts){
+  const r = await mb('recording?limit=25&query=' + encodeURIComponent(`arid:${a} AND arid:${b}`), 'high');
+  const list = dedupeRecs((r.recordings || []).map(recPick)).filter(x => !(opts && opts.usedRecs && opts.usedRecs.has(x.id)) && x.artists.some(y => y.id === a) && x.artists.some(y => y.id === b));
+  return (title && list.find(x => normTitle(x.title) === normTitle(title))) || list[0] || null;
 }
 const hintStates = new Map();
 
@@ -1055,7 +1124,9 @@ function openHints(opts = {}){
   const body = () => $('#hintBody');
   const showPath = p => {
     const first = p[0];
-    const nextText = first.via.type === 'feat'
+    const nextText = first.via.bandText
+      ? `Der nächste Song gelingt über eine Band: ${esc(first.via.bandText)}.`
+      : first.via.type === 'feat'
       ? `Der nächste Song verbindet <b>${esc(first.fromName)}</b> mit <b>${esc(first.toName)}</b>.`
       : `Weiter geht es über <b>${esc(first.toName)}</b>: ${esc(first.via.text)}.`;
     body().innerHTML = `
@@ -1063,7 +1134,7 @@ function openHints(opts = {}){
       <p class="muted small">Jede Stufe zählt als ein Tipp und wird im Ergebnis angezeigt.</p>
       <div id="lv1" ${level >= 1 ? '' : 'hidden'}><p>${nextText}</p></div>
       <div id="lv2" ${level >= 2 ? '' : 'hidden'}>${stepCard(first, 0)}</div>
-      <div id="lv3" ${level >= 3 ? '' : 'hidden'}><div class="chain">${p.map((e, i) => (i ? `<div class="link ${e.via.type === 'band' ? 'band' : ''}"><span class="bar"></span><span class="lbl">${e.via.type === 'band' ? esc(e.via.text) : 'gemeinsam: ' + esc(e.fromName)}</span></div>` : '') + stepCard(e, i)).join('')}</div></div>
+      <div id="lv3" ${level >= 3 ? '' : 'hidden'}><div class="chain">${p.map((e, i) => (i ? `<div class="link ${e.via.type === 'band' ? 'band' : ''}"><span class="bar"></span><span class="lbl">${e.via.bandText ? esc(e.via.bandText) : e.via.type === 'band' ? esc(e.via.text) : 'gemeinsam: ' + esc(e.fromName)}</span></div>` : '') + stepCard(e, i)).join('')}</div></div>
       <button class="btn" id="hintMore" ${level >= 3 ? 'hidden' : ''}>${['Kleiner Tipp: welcher Künstler?', 'Nächsten Song zeigen', 'Ganzen Weg zeigen'][level] || ''}</button>
       <button class="btn ghost" id="hintSolve">Komplette Kette ausgeben</button>
       <p class="muted small" style="margin-top:-4px">Hängt alle Songs bis zum Ziel an. Das Ergebnis wird als „von der App gelöst“ markiert.</p>`;
@@ -1081,51 +1152,76 @@ function openHints(opts = {}){
     if(game && !game.won) toast(added ? `${added} Songs angehängt, das Ziel ist noch nicht erreicht` : 'Die Kette konnte nicht automatisch erweitert werden');
   };
   const showNone = async () => {
-    body().innerHTML = `<p class="muted small">In ${st.expanded} geprüften Künstlern noch kein Weg zu ${esc(game.ch.target.name)} gefunden${st.done ? ', und weitere Verbindungen gibt es in MusicBrainz nicht' : ''}.</p>
+    const wdOk = wdFails < 3 && wdColFails < 3;
+    body().innerHTML = `<p>Noch kein Weg zu <b>${esc(game.ch.target.name)}</b> gefunden${st.done ? '. Weitere Verbindungen gibt es in den Daten nicht' : ''}.</p>
+      <div class="panel" style="padding:12px;gap:4px">
+        <span class="eyebrow">Was die Suche gesehen hat</span>
+        <span class="small">Geprüft: ${st.eA} Künstler von deiner Kette aus, ${st.eB} von ${esc(game.ch.target.name)} aus</span>
+        <span class="small">Bekannte Künstler: ${st.A.size} auf deiner Seite, ${st.B.size} auf der Zielseite</span>
+        <span class="small">Wikidata: ${wdOk ? 'erreichbar' : 'nicht erreichbar, Suche läuft langsamer nur über MusicBrainz'}</span>
+        ${st.B.size <= 3 ? '<span class="small">Die Zielband hat in den Daten kaum Verbindungen. Ein anderes Ziel oder ein Umweg über ihre Mitglieder hilft.</span>' : ''}
+      </div>
       ${st.done ? '' : '<button class="btn primary" id="hintAgain">Weitersuchen</button>'}
       <span class="eyebrow">Verbundene Künstler zum Weiterprobieren</span><div class="list" id="hintNb"><div class="busy"><span class="spin"></span><span>Lade …</span></div></div>`;
     if($('#hintAgain')) $('#hintAgain').onclick = () => run();
-    try{
-      if(settings().bandLinks) await wdFetch(starts.map(a => a.id));
-      const nb = (await Promise.all(starts.map(a => neighbors(a.id, a.name, hintOpts())))).flat();
-      const seen = new Set(); const list = nb.filter(x => !seen.has(x.artist.id) && seen.add(x.artist.id)).slice(0, 10);
-      const el = $('#hintNb'); if(!el) return;
-      el.innerHTML = list.length ? list.map((x, i) => `<button class="item" data-nb="${i}"><div class="txt"><div class="t1">${esc(x.artist.name)}</div><div class="t2">${x.via.type === 'band' ? esc(x.via.text) : 'z. B. ' + esc(x.via.rec.title) + ' – ' + esc(x.via.rec.credit)}</div></div></button>`).join('') : '<p class="muted small">Keine gefunden.</p>';
-      $$('[data-nb]').forEach(b => b.onclick = () => { countHint(); const x = list[+b.dataset.nb]; x.via.type === 'feat' ? useSong({ ...x.via.rec }) : searchArtistSongs(x.artist); });
-    }catch(e){ handleErr(e); }
+    try{ await neighborList($('#hintNb'), starts, 10, true); }catch(e){ handleErr(e); }
   };
+  let stopped = false;
   const run = async () => {
+    stopped = false;
     body().innerHTML = `<div class="busy"><span class="spin"></span><span id="hintProg">Suche einen Weg zu ${esc(game.ch.target.name)} …</span></div>
-      <p class="muted small">MusicBrainz beantwortet etwa eine Anfrage pro Sekunde, das kann bis zu einer Minute dauern.</p>`;
+      <p class="muted small" id="hintProg2">Die Suche läuft von deiner Kette und von der Zielband aus, bis sich beide treffen. Das kann ein paar Minuten dauern.</p>
+      <button class="btn ghost" id="hintStop">Suche stoppen</button>`;
+    $('#hintStop').onclick = () => { stopped = true; const b = $('#hintStop'); if(b){ b.disabled = true; b.textContent = 'Wird gestoppt …'; } };
+    const isStopped = () => cancelled || stopped;
     try{
-      const prog = (n, name) => { const el = $('#hintProg'); if(el) el.textContent = `${n} Künstler geprüft, gerade: ${name}`; };
-      let p = st.path || await searchPath(st, hintOpts(), 35, prog, () => cancelled);
-      for(let tries = 0; p && !cancelled && tries < 4; tries++){
-        const el = $('#hintProg'); if(el) el.textContent = 'Prüfe den gefundenen Weg in MusicBrainz …';
-        if(await verifyPath(p)) break;
-        st = newHintState(starts, game.ch.target); hintStates.set(key, st);
-        p = await searchPath(st, hintOpts(), 35, prog, () => cancelled);
+      const prog = (s2, name) => {
+        const el = $('#hintProg'); if(el) el.textContent = `${s2.expanded} Künstler geprüft, gerade: ${name}`;
+        const el2 = $('#hintProg2'); if(el2) el2.textContent = `Bekannt: ${s2.A.size} Künstler auf deiner Seite, ${s2.B.size} auf der Zielseite.`;
+      };
+      const ho = hintOpts();
+      let p = st.path || await searchPath(st, ho, 150, prog, isStopped);
+      for(let tries = 0; p && !isStopped() && tries < 6; tries++){
+        const el = $('#hintProg'); if(el) el.textContent = 'Belege den gefundenen Weg in MusicBrainz …';
+        if(await verifyPath(p, ho)) break;
+        st.path = null; st = newHintState(starts, game.ch.target); hintStates.set(key, st);
+        p = await searchPath(st, ho, 150, prog, isStopped);
       }
       if(cancelled || !$('#hintBody')) return;
+      if(p) p = compressPath(p);
       if(p && opts.auto) return solve(p);
       p ? showPath(p) : showNone();
-    }catch(e){ if(!cancelled && $('#hintBody')) body().innerHTML = `<div class="verdict bad">${esc(e.message)}</div>`; }
+    }catch(e){ if(!cancelled && $('#hintBody')) body().innerHTML = `<div class="verdict bad">${esc(e.message)}</div><button class="btn" id="hintAgain">Nochmal versuchen</button>`; const b = $('#hintAgain'); if(b) b.onclick = () => run(); }
   };
   run();
+}
+/* Liste direkt verbundener Künstler; gemeinsame Songs aus Wikidata werden beim Antippen in MusicBrainz belegt */
+async function neighborList(el, starts, max, counts){
+  if(!el) return;
+  await wdPrefetch(starts.map(a => a.id));
+  const ho = hintOpts();
+  const nb = (await Promise.all(starts.map(a => neighbors(a.id, a.name, ho)))).flat();
+  const seen = new Set(); const list = nb.filter(x => !seen.has(x.artist.id) && seen.add(x.artist.id)).slice(0, max);
+  if(!document.body.contains(el)) return;
+  const desc = x => x.via.type === 'band' ? esc(x.via.text) : x.via.rec ? 'z. B. ' + esc(x.via.rec.title) + ' – ' + esc(x.via.rec.credit) : 'gemeinsamer Song' + (x.via.title ? ': ' + esc(x.via.title) : '');
+  el.innerHTML = list.length ? list.map((x, i) => `<button class="item" data-nb="${i}"><div class="txt"><div class="t1">${esc(x.artist.name)}</div><div class="t2">${desc(x)}</div></div></button>`).join('') : '<p class="muted small">Keine Verbindungen gefunden.</p>';
+  $$('[data-nb]').forEach(b => b.onclick = async () => {
+    const x = list[+b.dataset.nb]; if(counts) countHint();
+    if(x.via.type === 'band') return searchArtistSongs(x.artist);
+    if(x.via.rec) return useSong({ ...x.via.rec });
+    b.querySelector('.t2').textContent = 'Suche den Song in MusicBrainz …';
+    try{
+      const rec = await recWithBoth(x.via.from, x.via.to, x.via.title, ho);
+      if(rec) useSong(rec); else { b.querySelector('.t2').textContent = 'Kein passender Song in MusicBrainz'; badEdges.add('f:' + x.via.from + '>' + x.via.to); }
+    }catch(e){ handleErr(e); }
+  });
 }
 async function openNeighborHints(){
   const starts = anchors().filter(a => a.id);
   if(!starts.length){ toast('Wähle zuerst einen ersten Song'); return; }
   sheet(`<h2>Mögliche nächste Schritte</h2><p class="muted small">Künstler, die mit dem letzten Song verbunden sind.</p>
     <div class="list" id="hintNb"><div class="busy"><span class="spin"></span><span>Lade Verbindungen …</span></div></div><button class="btn ghost" data-close>Schließen</button>`);
-  try{
-    if(settings().bandLinks) await wdFetch(starts.map(a => a.id));
-      const nb = (await Promise.all(starts.map(a => neighbors(a.id, a.name, hintOpts())))).flat();
-    const seen = new Set(); const list = nb.filter(x => !seen.has(x.artist.id) && seen.add(x.artist.id)).slice(0, 15);
-    const el = $('#hintNb'); if(!el) return;
-    el.innerHTML = list.length ? list.map((x, i) => `<button class="item" data-nb="${i}"><div class="txt"><div class="t1">${esc(x.artist.name)}</div><div class="t2">${x.via.type === 'band' ? esc(x.via.text) : 'z. B. ' + esc(x.via.rec.title) + ' – ' + esc(x.via.rec.credit)}</div></div></button>`).join('') : '<p class="muted small">Keine Verbindungen gefunden.</p>';
-    $$('[data-nb]').forEach(b => b.onclick = () => { const x = list[+b.dataset.nb]; x.via.type === 'feat' ? useSong({ ...x.via.rec }) : searchArtistSongs(x.artist); });
-  }catch(e){ handleErr(e); }
+  try{ await neighborList($('#hintNb'), starts, 15, false); }catch(e){ handleErr(e); }
 }
 
 /* ---------- Keine Verbindung gefunden ---------- */
