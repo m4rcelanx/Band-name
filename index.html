@@ -224,6 +224,18 @@ body.hasplayer .toast{bottom:calc(220px + env(safe-area-inset-bottom,0px))}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .grid2 .btn{min-height:44px;padding:10px;font-size:14px}
 .actions{gap:10px}
+.levelpick{display:flex;flex-direction:column;gap:8px}
+.seg4{grid-template-columns:repeat(4,1fr)}
+.seg4 button{display:flex;flex-direction:column;align-items:center;gap:1px;padding:7px 2px}
+.seg4 button b{font-size:13px}
+.seg4 button small{font:500 10px var(--f-mono);color:var(--muted);font-weight:400}
+.dicebtn{align-self:flex-start}
+.levelinfo{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.lvl{display:inline-block;font:700 11px/1 var(--f-mono);text-transform:uppercase;letter-spacing:.08em;padding:5px 8px;border-radius:999px;vertical-align:middle}
+.lvl-leicht{background:color-mix(in srgb,var(--ok) 20%,transparent);color:var(--ok)}
+.lvl-mittel{background:color-mix(in srgb,var(--band) 20%,transparent);color:var(--band)}
+.lvl-schwer{background:color-mix(in srgb,var(--accent) 22%,transparent);color:var(--accent)}
+.lvl-profi{background:color-mix(in srgb,var(--bad) 22%,transparent);color:var(--bad)}
 .toggle input[type=checkbox]{appearance:none;-webkit-appearance:none;width:46px;height:28px;border-radius:999px;background:var(--surface2);border:1px solid var(--line);position:relative;cursor:pointer;transition:background .15s;margin:0}
 .toggle input[type=checkbox]::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:var(--muted);transition:transform .15s,background .15s}
 .toggle input[type=checkbox]:checked{background:var(--accent);border-color:var(--accent)}
@@ -1147,6 +1159,8 @@ const BADGES = [
   ['erste','Erste Kette','Die erste eigene Kette gelöst'],
   ['ohnetipp','Ohne Tipp','Eine Aufgabe ganz ohne Tipp gelöst'],
   ['par','Punktlandung','Genau auf Par gelöst'],
+  ['schwer','Harter Brocken','Eine schwere Kette (Par 4) selbst gelöst'],
+  ['profi','Profi','Eine Profi-Kette (Par 5+) selbst gelöst'],
   ['unterpar','Unter Par','Kürzer als das Par gelöst'],
   ['bandwechsel','Bandwechsler','Drei Band-Links in einer Kette'],
   ['blitz','Blitzkette','In unter 2 Minuten gelöst'],
@@ -1159,6 +1173,38 @@ const BADGES = [
   ...PACKS.map(p => ['paket-' + p.id, p.name + ' komplett', 'Alle Aufgaben im Paket gelöst']),
 ];
 const PAR_RANGE = [[4,5],[2,2],[2,2],[3,3],[3,3],[3,4],[3,4]]; // Sonntag bis Samstag
+/* Schwierigkeit nach Länge des kürzesten Wegs (Par) */
+const LEVELS = [
+  { id:'leicht', name:'Leicht', lo:1, hi:2, bonus:0, hint:'Par 1–2' },
+  { id:'mittel', name:'Mittel', lo:3, hi:3, bonus:3, hint:'Par 3' },
+  { id:'schwer', name:'Schwer', lo:4, hi:4, bonus:6, hint:'Par 4' },
+  { id:'profi', name:'Profi', lo:5, hi:99, bonus:10, hint:'Par 5+' }
+];
+function levelFor(par){ return par ? LEVELS.find(l => par >= l.lo && par <= l.hi) || LEVELS[3] : null; }
+function levelTag(par){ const l = levelFor(par); return l ? `<span class="lvl lvl-${l.id}">${l.name}</span>` : ''; }
+function curLevel(){ const id = LS.get('level', 'mittel'); return LEVELS.find(l => l.id === id) || LEVELS[1]; }
+/* Par für die gewählten Bands, zwischengespeichert pro Paar */
+const parCache = new Map();
+function draftPar(){
+  if(!draft.start || !draft.target || !graph) return undefined;
+  const k = draft.start.id + '>' + draft.target.id;
+  if(!parCache.has(k)) parCache.set(k, parFor(draft.start, draft.target));
+  return parCache.get(k);
+}
+/* Zufälliges Paar bekannter Bands mit passender Schwierigkeit */
+function randomPairFor(level){
+  const names = [...new Set([...DAILY_POOL, ...POOL.map(x => x[0])])];
+  const pool = names.map(graphByName).filter(Boolean);
+  let best = null;
+  for(let t = 0; t < 3000; t++){
+    const a = pool[Math.floor(Math.random() * pool.length)], b = pool[Math.floor(Math.random() * pool.length)];
+    if(!a || !b || a.id === b.id) continue;
+    const par = parFor(a, b); if(!par) continue;
+    if(par >= level.lo && par <= level.hi) return { a, b, par };
+    if(!best || Math.abs(par - level.lo) < Math.abs(best.par - level.lo)) best = { a, b, par };
+  }
+  return best;
+}
 
 const pad2 = n => String(n).padStart(2, '0');
 function dayKey(d = new Date()){ return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; }
@@ -1257,6 +1303,7 @@ function scoreGame(g){
   const L = [], n = g.steps.length;
   L.push(['Kette gelöst', g.free ? 5 : 10]);
   if(g.par){ const d = g.par - n; if(d > 0) L.push([`${d} unter Par`, 5 + 5 * d]); else if(d === 0) L.push(['Par getroffen', 5]); else L.push([`${-d} über Par`, 2 * d]); }
+  const lv = levelFor(g.par); if(lv && lv.bonus) L.push([`Schwierigkeit ${lv.name}`, lv.bonus]);
   if(g.kind === 'daily') L.push(['Tageskette', 5]);
   if(g.timeLimit) L.push(['Gegen die Uhr', 5]);
   if(g.hints) L.push([`${g.hints} Tipp${g.hints === 1 ? '' : 's'}`, -2 * g.hints]);
@@ -1300,6 +1347,8 @@ function award(){
     earn('erste');
     if(!game.free && !game.hints) earn('ohnetipp');
     if(game.par && n === game.par) earn('par');
+    if(game.par >= 4) earn('schwer');
+    if(game.par >= 5) earn('profi');
     if(game.par && n < game.par) earn('unterpar');
     if(game.steps.filter(x => x.link.type === 'band' || x.link.type === 'colleague').length >= 3) earn('bandwechsel');
     if(ms < 120000 && n >= 2) earn('blitz');
@@ -1857,9 +1906,14 @@ function homeView(){
     <div id="dailyBox"><div class="busy"><span class="spin"></span><span>Wird vorbereitet …</span></div></div>
   </div>
   <div class="panel">
-    <div class="rankrow"><span class="eyebrow">Eigene Challenge</span><button class="btn small dicebtn" id="btnRandom">${ICON.dice} Zufällige Bands</button></div>
+    <span class="eyebrow">Eigene Challenge</span>
+    <div class="levelpick"><span class="small muted">Schwierigkeit für zufällige Bands</span>
+      <div class="seg seg4" role="radiogroup" aria-label="Schwierigkeit">${LEVELS.map(l => `<button role="radio" class="${curLevel().id === l.id ? 'on' : ''}" aria-checked="${curLevel().id === l.id}" data-level="${l.id}"><b>${l.name}</b><small>${l.hint}</small></button>`).join('')}</div>
+      <button class="btn small dicebtn" id="btnRandom">${ICON.dice} Zufällige Bands: ${esc(curLevel().name)}</button>
+    </div>
     <div class="vs">${pickBox('start', draft.start)}<button class="swap" id="btnSwap" aria-label="Start und Ziel tauschen" ${draft.start || draft.target ? '' : 'disabled'}>${ICON.swap}</button>${pickBox('target', draft.target)}</div>
     ${draft.duel ? `<p class="small">Duell gegen <b>${esc(draft.duel.name)}</b>: ${draft.duel.songs} Songs in ${fmtTime(draft.duel.secs * 1000)}. Weniger Songs gewinnen, bei Gleichstand die Zeit.</p>` : draft.best ? `<p class="small">Zu schlagen: <b>${draft.best} Songs</b></p>` : ''}
+    ${ready ? '<div class="levelinfo" id="levelInfo"><span class="spin"></span><span class="small muted">Schwierigkeit wird berechnet …</span></div>' : ''}
     <label class="toggle"><span>Zeitrennen<small>3 Minuten, 5 Bonuspunkte</small></span><input type="checkbox" id="race" ${draft.race ? 'checked' : ''}></label>
     <button class="btn primary block" id="btnStart" ${ready ? '' : 'disabled'}>${ready ? 'Los geht’s' : 'Erst Start- und Zielband wählen'}</button>
     <div class="row minor" ${ready ? '' : 'hidden'}>
@@ -1884,6 +1938,14 @@ function homeView(){
     <div class="t2">${new Date(x.at).toLocaleDateString('de-DE')} · ${fmtTime(x.ms)}${x.claims ? ' · ' + x.claims + ' unbelegt' : ''}${x.hints ? ' · ' + x.hints + ' Tipps' : ''}${x.solved ? ' · von der App gelöst' : ''}</div></div>
     <span class="tag ok">${x.n} Songs${x.points !== undefined ? ' · ' + x.points + ' P.' : ''}</span></button>`).join('')}</div></div>` : ''}`;
 }
+async function fillLevelInfo(){
+  const el = $('#levelInfo'); if(!el) return;
+  try{ await loadGraph(); }catch(e){}
+  const par = draftPar(), box = $('#levelInfo'); if(!box) return;
+  if(!par){ box.innerHTML = '<span class="small muted">Im Musiknetz ist kein Weg bekannt. Schwierigkeit offen, es gibt keinen Par-Bonus.</span>'; return; }
+  const lv = levelFor(par);
+  box.innerHTML = `${levelTag(par)}<span class="small">Kürzester Weg: <b>${par} Song${par === 1 ? '' : 's'}</b>${lv.bonus ? ` · +${lv.bonus} Punkte für die Schwierigkeit` : ''}</span>`;
+}
 async function fillDaily(){
   const box = $('#dailyBox'); if(!box) return;
   const k = dayKey();
@@ -1891,7 +1953,7 @@ async function fillDaily(){
     const d = await dailyFor(k), el = $('#dailyBox'); if(!el) return;
     if(!d){ el.innerHTML = '<p class="muted small">Für die Tageskette fehlt das Musiknetz.</p>'; return; }
     const done = profile().daily[k];
-    el.innerHTML = `<h3>${esc(d.s.name)} → ${esc(d.t.name)}</h3><span class="muted small">Par ${d.par}</span>
+    el.innerHTML = `<h3>${esc(d.s.name)} → ${esc(d.t.name)}</h3><span class="muted small">${levelTag(d.par)} Par ${d.par}</span>
       ${done ? `<div class="verdict ${done.solved ? 'claim' : 'ok'}">${done.solved ? 'Heute von der App gelöst, 0 Punkte' : `Gelöst mit ${done.n} Songs: ${parWord(done.n, done.par)}`}</div>
       <div class="row"><button class="btn primary" id="dShare">Ergebnis teilen</button><button class="btn ghost" id="dPlay">Nochmal spielen</button></div>`
       : '<button class="btn primary block" id="dPlay">Tageskette spielen</button>'}`;
@@ -1904,8 +1966,10 @@ function bindHome(){
   $$('[data-hist]').forEach(b => b.onclick = () => { const x = LS.get('history', [])[+b.dataset.hist]; if(x && x.code) startVerify(x.code); });
   $('#btnRandom').onclick = randomChallenge;
   $('#race').onchange = e => { draft.race = e.target.checked; };
-  const meta = () => ({ duel:draft.duel || null, timeLimit:draft.race ? 180000 : null });
-  $('#btnStart').onclick = () => guardRunning(() => newGame(draft.start, draft.target, draft.best, meta()));
+  const meta = () => ({ duel:draft.duel || null, timeLimit:draft.race ? 180000 : null, par:draftPar() || null });
+  $$('[data-level]').forEach(b => b.onclick = () => { LS.set('level', b.dataset.level); render(); });
+  if($('#levelInfo')) fillLevelInfo();
+  $('#btnStart').onclick = async () => { try{ await loadGraph(); }catch(e){} guardRunning(() => newGame(draft.start, draft.target, draft.best, meta())); };
   $('#btnShareCh').onclick = () => shareChallenge(draft.start, draft.target, draft.best);
   $('#btnAutoBuild').onclick = () => guardRunning(() => { newGame(draft.start, draft.target, draft.best, meta()); openHints({ auto:true }); });
   $('#btnFree').onclick = () => guardRunning(newFreeGame);
@@ -1936,6 +2000,18 @@ async function startPreset(p, btn){
 }
 async function randomChallenge(){
   const btn = $('#btnRandom') || $('#pRandom'); if(btn){ btn.disabled = true; btn.textContent = 'Suche …'; }
+  try{
+    await loadGraph();
+    if(graph && graph.baseN){
+      const lv = curLevel(), r = randomPairFor(lv);
+      if(r){
+        draft.start = r.a; draft.target = r.b; draft.best = null; draft.duel = null;
+        parCache.set(r.a.id + '>' + r.b.id, r.par);
+        if(r.par < lv.lo || r.par > lv.hi) toast(`Keine ${lv.name}-Kette gefunden, nimm diese mit Par ${r.par}`);
+        render(); return;
+      }
+    }
+  }catch(e){}
   const i = Math.floor(Math.random() * POOL.length); let j; do { j = Math.floor(Math.random() * POOL.length); } while(j === i);
   try{
     const a = await findArtist(...POOL[i]); const b = await findArtist(...POOL[j]);
@@ -1992,7 +2068,7 @@ function gameView(){
       <button class="toolbtn" id="btnUndo" aria-label="Letzten Song entfernen" ${game.steps.length ? '' : 'disabled'}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/></svg><span>Zurück</span></button>
     </div>
     <h2 class="routeline">${game.free ? 'Freie Kette' : `${esc(game.ch.start.name)} <span class="arrow">→</span> ${esc(game.ch.target.name)}`}</h2>
-    <div class="stats">${game.kind === 'party' ? `<span>Team <b>${esc(game.teamName || '')}</b></span>` : game.kind === 'daily' ? `<span><b>Tageskette${game.ranked === false ? ' (ohne Wertung)' : ''}</b></span>` : ''}<span>Songs <b>${game.steps.length}${s.maxSongs ? '/' + s.maxSongs : ''}</b></span>${game.par ? `<span>Par <b>${game.par}</b></span>` : ''}${game.duel ? `<span>${esc(game.duel.name)} <b>${game.duel.songs}</b></span>` : game.best ? `<span>Zu schlagen <b>${game.best}</b></span>` : ''}<span>${game.timeLimit && !game.timeUp ? 'Restzeit' : 'Zeit'} <b id="clock">${game.timeUp ? 'abgelaufen' : fmtTime(game.timeLimit ? game.timeLimit - (Date.now() - game.startedAt) : Date.now() - game.startedAt)}</b></span>${claims ? `<span>Unbelegt <b>${claims}</b></span>` : ''}${game.hints ? `<span>Tipps <b>${game.hints}</b></span>` : ''}</div>
+    <div class="stats">${game.kind === 'party' ? `<span>Team <b>${esc(game.teamName || '')}</b></span>` : game.kind === 'daily' ? `<span><b>Tageskette${game.ranked === false ? ' (ohne Wertung)' : ''}</b></span>` : ''}<span>Songs <b>${game.steps.length}${s.maxSongs ? '/' + s.maxSongs : ''}</b></span>${game.par ? `<span>${levelTag(game.par)} Par <b>${game.par}</b></span>` : ''}${game.duel ? `<span>${esc(game.duel.name)} <b>${game.duel.songs}</b></span>` : game.best ? `<span>Zu schlagen <b>${game.best}</b></span>` : ''}<span>${game.timeLimit && !game.timeUp ? 'Restzeit' : 'Zeit'} <b id="clock">${game.timeUp ? 'abgelaufen' : fmtTime(game.timeLimit ? game.timeLimit - (Date.now() - game.startedAt) : Date.now() - game.startedAt)}</b></span>${claims ? `<span>Unbelegt <b>${claims}</b></span>` : ''}${game.hints ? `<span>Tipps <b>${game.hints}</b></span>` : ''}</div>
   </div>
   ${chainHtml(game, true)}
   ${game.free && game.steps.length >= 2 ? '<button class="btn primary block" id="btnFinish">Kette abschließen</button>' : ''}
@@ -2478,6 +2554,7 @@ function resultView(){
   return `
   <div class="hero">
     <span class="eyebrow">${game.solved ? 'Von der App gelöst' : game.kind === 'daily' ? 'Tageskette ' + fmtDay(game.day) : pk ? pk.name : 'Aufgabe erfüllt'}</span>
+    ${game.par ? `<div>${levelTag(game.par)}</div>` : ''}
     <h1>${esc(game.ch.start.name)} → ${esc(game.ch.target.name)}</h1>
     <div class="big">${n}</div>
     <span class="muted">Songs · ${fmtTime(game.finishedAt - game.startedAt)}${game.hints ? ` · ${game.hints} Tipp${game.hints === 1 ? '' : 's'}` : ''}</span>
