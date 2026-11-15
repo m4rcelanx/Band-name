@@ -1,118 +1,132 @@
-// Baut das Musiknetz für die Band-Kette aus Wikidata.
-// Knoten: Künstler mit MusicBrainz-ID (P434).
-// Kanten: Bandmitgliedschaft (P463 / P527) und gemeinsamer Song oder gemeinsames Album (P175).
-// Ausgabe: graph.json im Repository-Hauptordner.
-// Die App nutzt das Netz nur zum schnellen Finden; jeder Schritt wird danach in MusicBrainz belegt.
+// Baut das Musiknetz für die Band-Kette ausschließlich aus dem MusicBrainz-Datenexport.
+// Damit enthält das Netz nur Verbindungen, die in MusicBrainz belegt sind:
+//   - Bandbeziehungen aus l_artist_artist (Mitglied, Kollaboration, dieselbe Person)
+//   - Feat-Verbindungen nur aus echten Aufnahmen (keine Videos), deren Credit mehrere Künstler nennt
+// Aufruf: node scripts/build-graph.mjs <Ordner mit mbdump-Tabellen> [Export-Name]
+// Ausgabe: graph.json im aktuellen Ordner.
 
-import { writeFileSync } from 'node:fs';
+import { createReadStream, writeFileSync, existsSync } from 'node:fs';
+import { createInterface } from 'node:readline';
+import { join } from 'node:path';
 
-const UA = 'BandKette/1.0 (https://github.com/m4rcelanx/band-name)';
-const HEX = '0123456789abcdef'.split('');
-const sleep = ms => new Promise(r => setTimeout(r, ms));
+const DIR = process.argv[2] || 'mbdump';
+const DUMP = process.argv[3] || '';
+const MAX_ARTISTS = +(process.env.MAX_ARTISTS || 150000);   // größte Künstler nach Anzahl Aufnahmen
+const MAX_CREDIT = 12;                                       // Credits mit mehr Künstlern (Sammelsingles) auslassen
 
-async function sparql(q, tries = 0){
-  let r;
-  try{
-    r = await fetch('https://query.wikidata.org/sparql', {
-      method:'POST',
-      headers:{ 'User-Agent':UA, Accept:'application/sparql-results+json', 'Content-Type':'application/x-www-form-urlencoded' },
-      body:new URLSearchParams({ query:q }),
-      signal:AbortSignal.timeout(90000)
-    });
-  }catch(e){
-    if(tries < 3){ await sleep(5000 * (tries + 1)); return sparql(q, tries + 1); }
-    throw new Error('timeout');
-  }
-  if(r.status === 429 || r.status === 503){
-    if(tries < 6){ const wait = (+r.headers.get('retry-after') || 10) * 1000; await sleep(wait); return sparql(q, tries + 1); }
-  }
-  let text;
-  try{ text = await r.text(); }catch(e){ throw new Error('timeout'); }
-  if([500, 502, 504].includes(r.status) || /TimeoutException|QueryTimeout/.test(text.slice(0, 3000))) throw new Error('timeout');
-  if(!r.ok) throw new Error('HTTP ' + r.status + ' ' + text.slice(0, 200));
-  try{ return JSON.parse(text).results.bindings; }catch(e){ throw new Error('timeout'); }
-}
+const LINK_GIDS = {
+  '5be4c609-9afa-4ea0-910b-12ffb71e3821': 1, // member of band: entity0 ist Mitglied von entity1
+  '75c09861-6857-4ec0-9729-84eefde7fc86': 3, // collaboration: entity0 gehört zu Projekt entity1
+  'dd9886f2-1dfe-4270-97db-283f6839a666': 4, // is person: dieselbe Person
+};
+const LINK_NAMES = { 'member of band':1, 'collaboration':3, 'is person':4 };
 
-const idx = new Map(), ids = [], names = [];
-function node(mb, label){
-  let i = idx.get(mb);
-  if(i === undefined){ i = ids.length; idx.set(mb, i); ids.push(mb); names.push(label || ''); }
-  else if(!names[i] && label) names[i] = label;
-  return i;
-}
-const MBID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-function addEdges(rows, set){
+const t0 = Date.now();
+const log = (...a) => console.log(`[${Math.round((Date.now() - t0) / 1000)}s]`, ...a);
+const unesc = s => s.indexOf('\\') < 0 ? s : s.replace(/\\(.)/g, (_, c) => c === 't' ? '\t' : c === 'n' ? '\n' : c === 'r' ? '\r' : c);
+
+async function each(table, fn){
+  const file = join(DIR, table);
+  if(!existsSync(file)) throw new Error('Tabelle fehlt: ' + file);
+  const rl = createInterface({ input:createReadStream(file, { highWaterMark:1 << 20 }), crlfDelay:Infinity });
   let n = 0;
-  for(const b of rows){
-    const a = b.a && b.a.value, c = b.b && b.b.value;
-    if(!a || !c || a === c || !MBID.test(a) || !MBID.test(c)) continue;
-    const i = node(a, b.xl && b.xl.value), j = node(c, b.yl && b.yl.value);
-    const k = i < j ? i + ',' + j : j + ',' + i;
-    if(!set.has(k)){ set.add(k); n++; }
-  }
+  for await (const line of rl){ fn(line.split('\t')); n++; }
+  log(`${table}: ${n} Zeilen`);
   return n;
 }
 
-// Fragt in Teilen ab (nach Anfang der MusicBrainz-ID); läuft ein Teil in eine Zeitüberschreitung, wird er weiter aufgeteilt.
-async function partitioned(label, build, set, prefix = ''){
-  const parts = prefix ? HEX.map(h => prefix + h) : HEX;
-  for(const p of parts){
-    try{
-      const rows = await sparql(build(p));
-      const n = addEdges(rows, set);
-      console.log(`${label} ${p.padEnd(3)} ${rows.length} Zeilen, ${n} neue Kanten (gesamt ${set.size})`);
-      await sleep(1500);
-    }catch(e){
-      if(e.message === 'timeout' && p.length < 4){ console.log(`${label} ${p}: zu groß, teile weiter auf`); await partitioned(label, build, set, p); }
-      else { console.log(`${label} ${p}: übersprungen (${e.message})`); }
-    }
+// 1. Beziehungstypen
+const typeCode = new Map();
+await each('link_type', c => {
+  const code = LINK_GIDS[c[3]] || (c[4] === 'artist' && c[5] === 'artist' ? LINK_NAMES[c[6]] : 0);
+  if(code) typeCode.set(+c[0], code);
+});
+if(typeCode.size < 3) throw new Error('Beziehungstypen nicht gefunden: ' + [...typeCode.entries()].join(' '));
+
+// 2. Konkrete Beziehungen (mit "beendet")
+const linkCode = new Map();
+await each('link', c => {
+  const code = typeCode.get(+c[1]);
+  if(code) linkCode.set(+c[0], code | (c[10] === 't' ? 8 : 0));
+});
+
+// 3. Künstler
+let maxId = 0;
+const gid = [], name = [];
+await each('artist', c => { const id = +c[0]; gid[id] = c[1]; name[id] = unesc(c[2]); if(id > maxId) maxId = id; });
+
+// 4. Credits: welche Künstler stehen in welchem Credit
+const creditFirst = new Map(), creditMulti = new Map();
+await each('artist_credit_name', c => {
+  const cr = +c[0], a = +c[2];
+  if(!creditFirst.has(cr)){ creditFirst.set(cr, a); return; }
+  const m = creditMulti.get(cr);
+  if(m){ if(!m.includes(a)) m.push(a); }
+  else if(creditFirst.get(cr) !== a) creditMulti.set(cr, [creditFirst.get(cr), a]);
+});
+
+// 5. Aufnahmen: Anzahl je Künstler und genutzte Mehrfach-Credits (nur echte Aufnahmen, keine Videos)
+const recCount = new Uint32Array(maxId + 1);
+const creditUse = new Map();
+await each('recording', c => {
+  if(c[8] === 't') return;
+  const cr = +c[3];
+  const m = creditMulti.get(cr);
+  if(m){ for(const a of m) recCount[a]++; creditUse.set(cr, (creditUse.get(cr) || 0) + 1); }
+  else { const a = creditFirst.get(cr); if(a !== undefined) recCount[a]++; }
+});
+
+// 6. Auswahl: die Künstler mit den meisten Aufnahmen; jeder ausgewählte Künstler hat mindestens eine Aufnahme
+const cand = [];
+for(let i = 1; i <= maxId; i++) if(recCount[i] > 0 && gid[i]) cand.push(i);
+cand.sort((x, y) => recCount[y] - recCount[x]);
+const keep = new Uint8Array(maxId + 1);
+cand.slice(0, MAX_ARTISTS).forEach(i => keep[i] = 1);
+log(`${cand.length} Künstler mit Aufnahmen, ausgewählt ${Math.min(cand.length, MAX_ARTISTS)} (ab ${recCount[cand[Math.min(cand.length, MAX_ARTISTS) - 1]]} Aufnahmen)`);
+
+// 7. Bandbeziehungen; Mitglieder mit eigener Aufnahme, die zwei ausgewählte Bands verbinden, kommen dazu
+const rels = [];
+await each('l_artist_artist', c => {
+  const code = linkCode.get(+c[1]); if(!code) return;
+  const a = +c[2], b = +c[3];
+  if(a !== b && recCount[a] > 0 && recCount[b] > 0) rels.push([a, b, code]);
+});
+const bridgeHits = new Map();
+for(const [a, b] of rels){
+  if(keep[a] && !keep[b]) bridgeHits.set(b, (bridgeHits.get(b) || 0) + 1);
+  if(keep[b] && !keep[a]) bridgeHits.set(a, (bridgeHits.get(a) || 0) + 1);
+}
+let bridges = 0;
+for(const [x, n] of bridgeHits) if(n >= 2){ keep[x] = 1; bridges++; }
+log(`${bridges} verbindende Bandmitglieder ergänzt`);
+
+// 8. Knoten durchnummerieren
+const idx = new Int32Array(maxId + 1).fill(-1);
+const ids = [], names = [];
+for(let i = 1; i <= maxId; i++) if(keep[i]){ idx[i] = ids.length; ids.push(gid[i]); names.push(name[i]); }
+
+const m = [], seenM = new Set();
+for(const [a, b, code] of rels){
+  if(!keep[a] || !keep[b]) continue;
+  const k = idx[a] * 4194304 + idx[b];
+  if(seenM.has(k)) continue; seenM.add(k);
+  m.push(idx[a], idx[b], code);
+}
+
+const s = [], seenS = new Set();
+for(const [cr] of creditUse){
+  const list = creditMulti.get(cr).filter(a => keep[a]);
+  if(list.length < 2 || creditMulti.get(cr).length > MAX_CREDIT) continue;
+  for(let x = 0; x < list.length; x++) for(let y = x + 1; y < list.length; y++){
+    let p = idx[list[x]], q = idx[list[y]]; if(p > q){ const t = p; p = q; q = t; }
+    const k = p * 4194304 + q;
+    if(seenS.has(k)) continue; seenS.add(k);
+    s.push(p, q);
   }
 }
 
-const LABELS = '';
-
-const memberQ = p => `SELECT DISTINCT ?a ?b WHERE {
-  ?x wdt:P434 ?a . FILTER(STRSTARTS(?a, "${p}"))
-  { ?x wdt:P463 ?y } UNION { ?y wdt:P527 ?x }
-  ?y wdt:P434 ?b .
-  ${LABELS}
-}`;
-
-const songQ = p => `SELECT DISTINCT ?a ?b WHERE {
-  ?x wdt:P434 ?a . FILTER(STRSTARTS(?a, "${p}"))
-  ?s wdt:P175 ?x .
-  ?s wdt:P175 ?y .
-  FILTER(?x != ?y)
-  VALUES ?t { wd:Q7366 wd:Q134556 wd:Q105543609 wd:Q2188189 wd:Q482994 }
-  ?s wdt:P31 ?t .
-  ?y wdt:P434 ?b .
-  ${LABELS}
-}`;
-
-const t0 = Date.now();
-const members = new Set(), songs = new Set();
-await partitioned('Mitglieder', memberQ, members);
-await partitioned('Songs', songQ, songs);
-
-// Namen gesammelt nachladen (englisch, sonst deutsch, sonst sprachneutral)
-for(let k = 0; k < ids.length; k += 300){
-  const chunk = ids.slice(k, k + 300);
-  try{
-    const rows = await sparql(`SELECT ?a ?l (LANG(?l) AS ?lang) WHERE {
-      VALUES ?a { ${chunk.map(x => `"${x}"`).join(' ')} }
-      ?x wdt:P434 ?a . ?x rdfs:label ?l . FILTER(LANG(?l) IN ("en", "de", "mul"))
-    }`);
-    const rank = { en:0, de:1, mul:2 }, best = new Map();
-    for(const b of rows){ const r = rank[b.lang.value] ?? 9, cur = best.get(b.a.value); if(!cur || r < cur.r) best.set(b.a.value, { r, l:b.l.value }); }
-    for(const [a, v] of best){ const i = idx.get(a); if(i !== undefined) names[i] = v.l; }
-  }catch(e){ console.log(`Namen ${k}: übersprungen (${e.message})`); }
-  if(k % 6000 === 0) console.log(`Namen ${k} von ${ids.length}`);
-  await sleep(700);
-}
-
-const flat = set => { const out = []; for(const k of set){ const [i, j] = k.split(','); out.push(+i, +j); } return out; };
-const graph = { v:1, built:new Date().toISOString().slice(0, 10), ids, names, m:flat(members), s:flat(songs) };
+const graph = { v:2, src:'musicbrainz', dump:DUMP, built:new Date().toISOString().slice(0, 10), ids, names, m, s };
 const json = JSON.stringify(graph);
 writeFileSync('graph.json', json);
-console.log(`Fertig in ${Math.round((Date.now() - t0) / 1000)} s: ${ids.length} Künstler, ${members.size} Mitgliedschaften, ${songs.size} Song-Verbindungen, ${(json.length / 1048576).toFixed(1)} MB`);
-if(ids.length < 1000) { console.error('Zu wenige Künstler, Netz wird nicht übernommen.'); process.exit(1); }
+log(`Fertig: ${ids.length} Künstler, ${m.length / 3} Bandbeziehungen, ${s.length / 2} gemeinsame Aufnahmen, ${(json.length / 1048576).toFixed(1)} MB`);
+if(ids.length < 1000 || m.length < 3000) { console.error('Zu wenige Daten, Netz wird nicht übernommen.'); process.exit(1); }

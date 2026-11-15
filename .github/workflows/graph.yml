@@ -19,14 +19,33 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: Netz aus Wikidata bauen
-        run: node scripts/build-graph.mjs
+      - name: Werkzeuge
+        run: sudo apt-get update -q && sudo apt-get install -y -q lbzip2
+      - name: MusicBrainz-Export laden und prüfen
+        run: |
+          BASE=https://data.metabrainz.org/pub/musicbrainz/data/fullexport
+          LATEST=$(curl -fsSL "$BASE/LATEST" | tr -d '[:space:]')
+          if ! [[ "$LATEST" =~ ^[0-9]{8}-[0-9]{6}$ ]]; then echo "Unerwarteter Exportname: $LATEST"; exit 1; fi
+          echo "LATEST=$LATEST" >> "$GITHUB_ENV"
+          sudo mkdir -p /mnt/mb && sudo chown "$USER" /mnt/mb && cd /mnt/mb
+          df -h /mnt
+          curl -fsSL --retry 3 -o mbdump.tar.bz2 "$BASE/$LATEST/mbdump.tar.bz2"
+          curl -fsSL -o SHA256SUMS "$BASE/$LATEST/SHA256SUMS"
+          grep ' mbdump.tar.bz2$' SHA256SUMS | sha256sum -c -
+      - name: Benötigte Tabellen entpacken
+        run: |
+          cd /mnt/mb
+          lbzip2 -dc mbdump.tar.bz2 | tar -xf - mbdump/link_type mbdump/link mbdump/artist mbdump/artist_credit_name mbdump/recording mbdump/l_artist_artist
+          rm mbdump.tar.bz2
+          ls -la mbdump
+      - name: Netz bauen
+        run: node --max-old-space-size=12000 scripts/build-graph.mjs /mnt/mb/mbdump "$LATEST"
       - name: Netz übernehmen
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add graph.json
           if git diff --cached --quiet; then echo "Keine Änderung"; exit 0; fi
-          git commit -m "Musiknetz aktualisiert"
+          git commit -m "Musiknetz aus MusicBrainz-Export $LATEST"
           git pull --rebase origin main
           git push

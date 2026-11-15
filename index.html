@@ -216,7 +216,8 @@ async function findArtist(name, country){
   const l2 = (r2.artists || []).map(artistPick);
   return exact(l2) || l2[0] || null;
 }
-function recPick(r){
+function recPick(r){ const out = recPickRaw(r); recordRec(out); return out; }
+function recPickRaw(r){
   const ac = r['artist-credit'] || [];
   return { id:r.id, title:r.title,
     artists:ac.filter(c => c.artist).map(c => ({ id:c.artist.id, name:c.artist.name })),
@@ -376,7 +377,7 @@ function artistInfo(id, prio = 'low'){
       type:r.type, dir:r.direction, artist:{ id:r.artist.id, name:r.artist.name },
       begin:(r.begin || '').slice(0, 4), end:(r.end || '').slice(0, 4), ended:!!r.ended }))
   }));
-  relCache.set(id, p); p.then(i => relDone.set(id, i)).catch(() => relCache.delete(id));
+  relCache.set(id, p); p.then(i => { relDone.set(id, i); recordRels(i); }).catch(() => relCache.delete(id));
   return p;
 }
 function years(r){ return r.begin ? ` (${r.begin}–${r.ended ? (r.end || '?') : 'heute'})` : ''; }
@@ -527,7 +528,8 @@ async function neighbors(id, name, opts){
     if(!(wd && wd.found) && !mbInfo){ const info = await artistInfo(id, 'high'); info.rels.forEach(r => rels.push({ ...r, src:'mb' })); }
     rels.forEach(r => {
       if(badEdges.has(id + '>' + r.artist.id) || have.has(r.artist.id)) return; have.add(r.artist.id);
-      out.push({ artist:r.artist, cost:0.8, via:{ type:'band', src:r.src, from:id, to:r.artist.id, text:relText({ id, name }, r) } });
+      const c = relCode(r);
+      out.push({ artist:r.artist, cost:0.8, via:{ type:'band', src:r.src, from:id, to:r.artist.id, code:c ? (r.dir === 'backward' ? c | 16 : c) : undefined, text:relText({ id, name }, r) } });
     });
   }
   const cs = (await collabsOf(id)).filter(c => !opts.usedRecs.has(c.rec.id)).slice(0, 50);
@@ -587,7 +589,7 @@ async function searchPath(st, opts, budget, onProgress, isStopped){
   return null;
 }
 /* Jeder Schritt muss in MusicBrainz belegt sein: Band-Links aus Wikidata gegenprüfen,
-   gemeinsame Songs aus Wikidata durch eine MusicBrainz-Aufnahme mit beiden Künstlern ersetzen. */
+   gemeinsame Songs durch eine MusicBrainz-Aufnahme mit beiden Künstlern belegen. */
 const songByCache = new Map();
 async function hasSongBy(id){
   if(songByCache.has(id)) return songByCache.get(id);
@@ -603,8 +605,9 @@ async function verifyPath(p, opts){
       const ra = a.rels.find(r => r.artist.id === e.to), rb = b.rels.find(r => r.artist.id === e.from);
       if(!ra && !rb){ badEdges.add(e.from + '>' + e.to); badEdges.add(e.to + '>' + e.from); return false; }
       e.via.text = ra ? relText(a, ra) : relText(b, rb); e.via.src = 'mb';
+      e.via.code = ra ? (relCode(ra) | (ra.dir === 'backward' ? 16 : 0)) : (relCode(rb) | (rb.dir === 'backward' ? 0 : 16));
     }
-    if(e.via.type === 'band' && p[i + 1] && p[i + 1].via.type === 'band' && !(await hasSongBy(e.to))){
+    if(e.via.type === 'band' && e.via.toBase !== true && p[i + 1] && p[i + 1].via.type === 'band' && !(await hasSongBy(e.to))){
       badEdges.add(e.from + '>' + e.to); badEdges.add(e.to + '>' + e.from); return false;
     }
     if(e.via.type === 'feat' && !e.via.rec){
@@ -615,31 +618,111 @@ async function verifyPath(p, opts){
   }
   return true;
 }
-/* ============ Vorberechnetes Musiknetz (graph.json, gebaut aus Wikidata) ============
-   Wird einmal geladen; die Wegsuche darin dauert Millisekunden. Gefundene Wege werden
-   danach Schritt für Schritt in MusicBrainz belegt. */
+
+/* ============ Musiknetz: graph.json aus dem MusicBrainz-Export + Live-Ergänzungen ============
+   Enthält nur in MusicBrainz belegte Verbindungen. Kantencodes: 1 Mitglied, 3 Kollaboration,
+   4 dieselbe Person (+8 beendet, +16 Gegenrichtung), 2 gemeinsame Aufnahme.
+   Was die Live-Suche in MusicBrainz findet, kommt sofort dazu und wird auf dem Gerät gespeichert. */
 let graph = null, graphLoading = null;
+const OVERLAY_MAX = 40000;
+let overlay = { nodes:{}, edges:[] }, overlayLoaded = false, overlaySaveT = null;
+const overlaySeen = new Set();
+const edgeSig = (a, b, code) => (code & 7) === 2 ? (a < b ? a + '~' + b : b + '~' + a) : a + '>' + b;
+function loadOverlay(){
+  if(overlayLoaded) return; overlayLoaded = true;
+  const o = LS.get('overlay', null);
+  if(o && o.nodes && Array.isArray(o.edges)) overlay = o;
+  overlay.edges.forEach(e => overlaySeen.add(edgeSig(e[0], e[1], e[2])));
+}
+function saveOverlay(){
+  clearTimeout(overlaySaveT);
+  overlaySaveT = setTimeout(() => {
+    if(overlay.edges.length > OVERLAY_MAX){
+      overlay.edges = overlay.edges.slice(-OVERLAY_MAX);
+      const used = new Set(); overlay.edges.forEach(e => { used.add(e[0]); used.add(e[1]); });
+      for(const id of Object.keys(overlay.nodes)) if(!used.has(id)) delete overlay.nodes[id];
+    }
+    LS.set('overlay', overlay);
+  }, 1500);
+}
+function graphNode(id, name){
+  let i = graph.idx.get(id);
+  if(i === undefined){ i = graph.ids.length; graph.ids.push(id); graph.names.push(name || ''); graph.idx.set(id, i); }
+  else if(!graph.names[i] && name) graph.names[i] = name;
+  return i;
+}
+function graphHas(i, j, code){
+  const g = graph, song = (code & 7) === 2;
+  if(i < g.baseN) for(let k = g.off[i]; k < g.off[i + 1]; k++) if(g.nb[k] === j && (((g.kind[k] & 7) === 2) === song)) return true;
+  const ex = g.extra.get(i); if(ex) for(const [y, c] of ex) if(y === j && (((c & 7) === 2) === song)) return true;
+  return false;
+}
+function graphAdd(aId, aName, bId, bName, code){
+  const i = graphNode(aId, aName), j = graphNode(bId, bName);
+  if(i === j || graphHas(i, j, code)) return false;
+  const push = (x, y, c) => { let l = graph.extra.get(x); if(!l){ l = []; graph.extra.set(x, l); } l.push([y, c]); };
+  push(i, j, code); push(j, i, (code & 7) === 2 ? 2 : code | 16);
+  graph.live++;
+  return true;
+}
+/* Belegte Verbindung aus MusicBrainz übernehmen: a/b = { id, name }; bei Bandcodes ist a das erste Element (z. B. das Mitglied) */
+function recordLive(a, b, code){
+  if(!a || !b || !a.id || !b.id || a.id === b.id || !MBID.test(a.id) || !MBID.test(b.id)) return;
+  loadOverlay();
+  const sig = edgeSig(a.id, b.id, code);
+  if(overlaySeen.has(sig)) return;
+  if(graph && !graphAdd(a.id, a.name, b.id, b.name, code)){ overlaySeen.add(sig); return; }
+  overlaySeen.add(sig);
+  overlay.edges.push([a.id, b.id, code]);
+  if(a.name) overlay.nodes[a.id] = a.name; if(b.name) overlay.nodes[b.id] = b.name;
+  saveOverlay();
+}
+const REL_CODE = { 'member of band':1, 'collaboration':3, 'is person':4 };
+function relCode(r){ return (REL_CODE[r.type] || 0) | (r.ended ? 8 : 0); }
+function recordRels(info){
+  info.rels.forEach(r => {
+    const c = relCode(r); if(!c) return;
+    if(r.dir === 'backward') recordLive(r.artist, info, c); else recordLive(info, r.artist, c);
+  });
+}
+function recordRec(rec){
+  if(!rec || !rec.id || rec.video) return;
+  const as = rec.artists.filter(a => a.id);
+  for(let x = 0; x < as.length; x++) for(let y = x + 1; y < as.length; y++) recordLive(as[x], as[y], 2);
+}
 function loadGraph(){
   if(graph) return Promise.resolve(graph);
   if(graphLoading) return graphLoading;
   graphLoading = (async () => {
-    const r = await fetch(new URL('graph.json', BASE).href, { cache:'force-cache' });
-    if(!r.ok) throw new Error('Musiknetz nicht verfügbar');
-    const g = await r.json();
+    let g = null;
+    try{
+      const r = await fetch(new URL('graph.json', BASE).href, { cache:'no-cache' });
+      if(r.ok){ const j = await r.json(); if(j && j.v === 2 && j.src === 'musicbrainz') g = j; }
+    }catch(e){}
+    if(!g) g = { ids:[], names:[], m:[], s:[], built:null, dump:'' };
     const n = g.ids.length, deg = new Uint32Array(n);
-    const count = arr => { for(let k = 0; k < arr.length; k += 2){ deg[arr[k]]++; deg[arr[k + 1]]++; } };
-    count(g.m); count(g.s);
+    for(let k = 0; k < g.m.length; k += 3){ deg[g.m[k]]++; deg[g.m[k + 1]]++; }
+    for(let k = 0; k < g.s.length; k += 2){ deg[g.s[k]]++; deg[g.s[k + 1]]++; }
     const off = new Uint32Array(n + 1); for(let i = 0; i < n; i++) off[i + 1] = off[i] + deg[i];
     const nb = new Uint32Array(off[n]), kind = new Uint8Array(off[n]), pos = off.slice(0, n);
-    const put = (arr, kd) => { for(let k = 0; k < arr.length; k += 2){ const a = arr[k], b = arr[k + 1]; nb[pos[a]] = b; kind[pos[a]++] = kd; nb[pos[b]] = a; kind[pos[b]++] = kd; } };
-    put(g.m, 1); put(g.s, 2);
-    graph = { ids:g.ids, names:g.names, idx:new Map(g.ids.map((id, i) => [id, i])), off, nb, kind, built:g.built };
+    for(let k = 0; k < g.m.length; k += 3){ const a = g.m[k], b = g.m[k + 1], c = g.m[k + 2]; nb[pos[a]] = b; kind[pos[a]++] = c; nb[pos[b]] = a; kind[pos[b]++] = c | 16; }
+    for(let k = 0; k < g.s.length; k += 2){ const a = g.s[k], b = g.s[k + 1]; nb[pos[a]] = b; kind[pos[a]++] = 2; nb[pos[b]] = a; kind[pos[b]++] = 2; }
+    graph = { ids:g.ids.slice(), names:g.names.slice(), idx:new Map(g.ids.map((id, i) => [id, i])), baseN:n, off, nb, kind,
+      extra:new Map(), live:0, built:g.built, dump:g.dump, mCount:g.m.length / 3, sCount:g.s.length / 2 };
+    loadOverlay();
+    overlay.edges.forEach(e => graphAdd(e[0], overlay.nodes[e[0]], e[1], overlay.nodes[e[1]], e[2]));
     return graph;
   })();
   graphLoading.catch(() => { graphLoading = null; });
   return graphLoading;
 }
-/* Kürzester Weg (Breitensuche von den Ziel-Einstiegen aus, Bandmitgliedschaften zuerst).
+function bandText(xName, yName, code){
+  const t = code & 7, ended = code & 8, [a, b] = code & 16 ? [yName, xName] : [xName, yName];
+  if(t === 1) return `${a} ${ended ? 'war' : 'ist'} Mitglied von ${b}`;
+  if(t === 3) return `${a} gehört zu ${b}`;
+  return `${a} und ${b} sind dieselbe Person`;
+}
+/* Kürzester Weg (Breitensuche von den Ziel-Einstiegen aus, Bandbeziehungen zuerst).
    Gibt { edges, s, t } zurück: s ist der erreichte Start-Einstieg, t der Ziel-Einstieg. */
 function graphPath(starts, targets, opts){
   const g = graph;
@@ -649,18 +732,26 @@ function graphPath(starts, targets, opts){
   const n = g.ids.length, next = new Int32Array(n).fill(-1), nk = new Uint8Array(n), seen = new Uint8Array(n);
   for(const t of T){ seen[t] = 1; if(S.has(t)) return { edges:[], s:g.ids[t], t:g.ids[t] }; }
   let frontier = T.slice(), hit = -1;
+  const visit = (x, y, c, nextF) => {
+    if(seen[y]) return false;
+    if(badEdges.has(((c & 7) === 2 ? 'f:' : '') + g.ids[y] + '>' + g.ids[x])) return false;
+    seen[y] = 1; next[y] = x; nk[y] = c; nextF.push(y);
+    return S.has(y);
+  };
   for(let depth = 0; depth < 14 && frontier.length && hit < 0; depth++){
     const nextF = [];
     for(const pass of [1, 2]){
       for(const x of frontier){
-        for(let k = g.off[x]; k < g.off[x + 1]; k++){
-          if(g.kind[k] !== pass) continue;
-          const y = g.nb[k]; if(seen[y]) continue;
-          if(pass === 1 && !opts.bandLinks) continue;
-          if(badEdges.has((pass === 1 ? '' : 'f:') + g.ids[y] + '>' + g.ids[x])) continue;
-          seen[y] = 1; next[y] = x; nk[y] = pass; nextF.push(y);
-          if(S.has(y)){ hit = y; break; }
+        if(x < g.baseN) for(let k = g.off[x]; k < g.off[x + 1]; k++){
+          const c = g.kind[k], isBand = (c & 7) !== 2;
+          if((pass === 1) !== isBand || (isBand && !opts.bandLinks)) continue;
+          if(visit(x, g.nb[k], c, nextF)){ hit = g.nb[k]; break; }
         }
+        if(hit < 0){ const ex = g.extra.get(x); if(ex) for(const [y, c] of ex){
+          const isBand = (c & 7) !== 2;
+          if((pass === 1) !== isBand || (isBand && !opts.bandLinks)) continue;
+          if(visit(x, y, c, nextF)){ hit = y; break; }
+        } }
         if(hit >= 0) break;
       }
       if(hit >= 0) break;
@@ -670,15 +761,18 @@ function graphPath(starts, targets, opts){
   if(hit < 0) return null;
   const edges = []; let x = hit;
   while(next[x] !== -1){
-    const y = next[x], from = g.ids[x], to = g.ids[y];
+    const y = next[x], from = g.ids[x], to = g.ids[y], cxy = nk[x];
+    /* nk[x] ist der Code aus Sicht von y (y → x); für x → y die Richtung umdrehen */
+    const code = (cxy & 7) === 2 ? 2 : cxy ^ 16;
     edges.push({ from, fromName:g.names[x] || '?', to, toName:g.names[y] || '?',
-      via: nk[x] === 1 ? { type:'band', src:'wd', from, to, text:`${g.names[x]} ↔ ${g.names[y]}` } : { type:'feat', src:'wd', from, to, rec:null } });
+      via: (code & 7) === 2 ? { type:'feat', src:'mb', from, to, rec:null, toBase:y < g.baseN }
+        : { type:'band', src:'mb', from, to, code, toBase:y < g.baseN, text:bandText(g.names[x] || '?', g.names[y] || '?', code) } });
     x = y;
   }
   return { edges, s:g.ids[hit], t:g.ids[x] };
 }
 const edgeKey = e => (e.via.type === 'band' ? '' : 'f:') + e.from + '>' + e.to;
-function flipEdge(e){ return { from:e.to, fromName:e.toName, to:e.from, toName:e.fromName, via:{ ...e.via, from:e.via.to, to:e.via.from } }; }
+function flipEdge(e){ return { from:e.to, fromName:e.toName, to:e.from, toName:e.fromName, via:{ ...e.via, from:e.via.to, to:e.via.from, code:e.via.code !== undefined ? e.via.code ^ 16 : undefined } }; }
 /* Weg übers Netz. Fehlt Start oder Ziel im Netz, werden nur deren direkte Verbindungen live geholt. */
 async function networkPath(starts, target, ho, say, isStopped){
   await loadGraph();
@@ -706,10 +800,19 @@ async function networkPath(starts, target, ho, say, isStopped){
     if(!gp) return null;
     const full = [...(pre.size ? [pre.get(gp.s)] : []), ...gp.edges, ...(post.size ? [post.get(gp.t)] : [])];
     if(!full.length) return null;
-    say(`Weg mit ${full.length} Schritt${full.length === 1 ? '' : 'en'} gefunden, belege ihn in MusicBrainz …`, tries);
-    if(await verifyPath(full, ho)) return full;
+    say(`Weg mit ${full.length} Schritt${full.length === 1 ? '' : 'en'} gefunden, hole die Songs aus MusicBrainz …`, tries);
+    if(await verifyPath(full, ho)){ recordPath(full); return full; }
   }
   return null;
+}
+function recordPath(p){
+  p.forEach(e => {
+    if(e.via.type === 'feat') recordRec(e.via.rec);
+    else if(e.via.src === 'mb' && e.via.code){
+      const a = { id:e.from, name:e.fromName }, b = { id:e.to, name:e.toName };
+      if(e.via.code & 16) recordLive(b, a, e.via.code & ~16); else recordLive(a, b, e.via.code);
+    }
+  });
 }
 
 /* Band-Link gefolgt von gemeinsamem Song: der Song enthält das Bandmitglied schon, ein eigener Song entfällt */
@@ -1189,7 +1292,7 @@ function stepCard(e, i){
   const head = i === 0 ? 'Nächster Song' : `Song ${i + 1}`;
   if(e.via.type === 'feat'){
     const r = e.via.rec;
-    return `<div class="node"><span class="num">${i + 1}</span><div class="txt"><div class="eyebrow">${head}</div><div class="t1">${esc(r.title)}</div><div class="t2">${esc(r.credit)}</div></div>
+    return `<div class="node"><span class="num">${i + 1}</span><div class="txt"><div class="eyebrow">${head}</div><div class="t1">${esc(r.title)}</div><div class="t2">${esc(r.credit)}</div>${e.via.bandText ? `<div class="t2">über ${esc(e.via.bandText)}</div>` : ""}</div>
       ${i === 0 ? '<button class="btn primary" data-use style="min-height:38px;padding:8px 12px">Übernehmen</button>' : ''}</div>`;
   }
   return `<div class="node"><span class="num">${i + 1}</span><div class="txt"><div class="eyebrow">${head}</div><div class="t1">Ein Song von ${esc(e.toName)}</div><div class="t2">${esc(e.via.text)}</div></div>
@@ -1304,7 +1407,7 @@ function openHints(opts = {}){
       if(!p && !isStopped()) p = await searchPath(st, ho, 150, prog, isStopped);
       for(let tries = 0; p && !isStopped() && tries < 6; tries++){
         const el = $('#hintProg'); if(el) el.textContent = 'Belege den gefundenen Weg in MusicBrainz …';
-        if(await verifyPath(p, ho)) break;
+        if(await verifyPath(p, ho)){ recordPath(p); break; }
         st.path = null; st = newHintState(starts, game.ch.target); hintStates.set(key, st);
         p = await searchPath(st, ho, 150, prog, isStopped);
       }
@@ -1555,7 +1658,16 @@ function openSettings(){
     <label class="toggle"><span>Tipps anzeigen<small>Blendet verbundene Bands als zusätzliche Suchfilter ein.</small></span><input type="checkbox" id="sHint" ${s.hints ? 'checked' : ''}></label>
     <label>Maximale Anzahl Songs (0 = unbegrenzt)<input type="text" inputmode="numeric" id="sMax" value="${s.maxSongs}"></label>
     <div class="row"><button class="btn ghost" data-close>Abbrechen</button><button class="btn primary" id="sSave">Speichern</button></div>
-    <p class="muted small">Daten: MusicBrainz, die offene Musikdatenbank. Fehlt eine Verbindung, kann sie dort jeder nachtragen.</p>`);
+    <p class="muted small">Daten: MusicBrainz, die offene Musikdatenbank. Fehlt eine Verbindung, kann sie dort jeder nachtragen.</p>
+    <span class="eyebrow">Musiknetz</span>
+    <p class="small" id="netInfo">Wird geladen …</p>
+    <button class="btn ghost" id="netClear">Gerät-Ergänzungen löschen</button>`);
+  loadGraph().then(g => {
+    const el = $('#netInfo'); if(!el) return;
+    const base = g.baseN ? `MusicBrainz-Export vom ${esc((g.dump || '').slice(6, 8) + '.' + (g.dump || '').slice(4, 6) + '.' + (g.dump || '').slice(0, 4))}: ${g.baseN.toLocaleString('de-DE')} Künstler, ${(g.mCount + g.sCount).toLocaleString('de-DE')} belegte Verbindungen.` : 'Noch kein Musiknetz aus MusicBrainz vorhanden, die App sucht live.';
+    el.textContent = `${base} Auf diesem Gerät aus Live-Suchen ergänzt: ${overlay.edges.length.toLocaleString('de-DE')} Verbindungen.`;
+  });
+  $('#netClear').onclick = () => { overlay = { nodes:{}, edges:[] }; overlaySeen.clear(); LS.del('overlay'); graph = null; graphLoading = null; toast('Ergänzungen gelöscht'); closeSheet(); };
   $('#sSave').onclick = () => {
     LS.set('settings', { maxSongs:Math.max(0, parseInt($('#sMax').value, 10) || 0), bandLinks:$('#sBand').checked,
       colleagues:$('#sCol').checked, claims:$('#sClaim').checked, hints:$('#sHint').checked });
