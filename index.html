@@ -227,7 +227,7 @@ body.hasplayer .toast{bottom:calc(220px + env(safe-area-inset-bottom,0px))}
 .lvlchoice{display:flex;flex-direction:column;gap:8px}
 .lvlbtn{display:flex;align-items:center;gap:12px;background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:14px;text-align:left;color:var(--fg);min-height:60px}
 .lvlbtn.on{border-color:var(--accent)}
-.lvlbtn .lvl{min-width:72px;text-align:center}
+.lvlbtn .lvl{min-width:96px;text-align:center}
 .lvlbtn .txt{display:flex;flex-direction:column}
 .lvlbtn small{color:var(--muted);font-size:12px}
 .seg4{grid-template-columns:repeat(4,1fr)}
@@ -241,6 +241,8 @@ body.hasplayer .toast{bottom:calc(220px + env(safe-area-inset-bottom,0px))}
 .lvl-mittel{background:color-mix(in srgb,var(--band) 20%,transparent);color:var(--band)}
 .lvl-schwer{background:color-mix(in srgb,var(--accent) 22%,transparent);color:var(--accent)}
 .lvl-profi{background:color-mix(in srgb,var(--bad) 22%,transparent);color:var(--bad)}
+.lvl-legende{background:color-mix(in srgb,var(--claim) 22%,transparent);color:var(--claim)}
+.lvl-marathon{background:var(--fg);color:var(--bg)}
 .toggle input[type=checkbox]{appearance:none;-webkit-appearance:none;width:46px;height:28px;border-radius:999px;background:var(--surface2);border:1px solid var(--line);position:relative;cursor:pointer;transition:background .15s;margin:0}
 .toggle input[type=checkbox]::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:var(--muted);transition:transform .15s,background .15s}
 .toggle input[type=checkbox]:checked{background:var(--accent);border-color:var(--accent)}
@@ -1165,7 +1167,9 @@ const BADGES = [
   ['ohnetipp','Ohne Tipp','Eine Aufgabe ganz ohne Tipp gelöst'],
   ['par','Punktlandung','Genau auf Par gelöst'],
   ['schwer','Harter Brocken','Eine schwere Kette (Par 4) selbst gelöst'],
-  ['profi','Profi','Eine Profi-Kette (Par 5+) selbst gelöst'],
+  ['profi','Profi','Eine Profi-Kette (Par 5) selbst gelöst'],
+  ['legende','Legende','Eine Kette mit Par 6 selbst gelöst'],
+  ['marathon','Marathon','Eine Kette mit Par 7 oder mehr selbst gelöst'],
   ['unterpar','Unter Par','Kürzer als das Par gelöst'],
   ['bandwechsel','Bandwechsler','Drei Band-Links in einer Kette'],
   ['blitz','Blitzkette','In unter 2 Minuten gelöst'],
@@ -1183,9 +1187,11 @@ const LEVELS = [
   { id:'leicht', name:'Leicht', lo:1, hi:2, bonus:0, hint:'Par 1–2' },
   { id:'mittel', name:'Mittel', lo:3, hi:3, bonus:3, hint:'Par 3' },
   { id:'schwer', name:'Schwer', lo:4, hi:4, bonus:6, hint:'Par 4' },
-  { id:'profi', name:'Profi', lo:5, hi:99, bonus:10, hint:'Par 5+' }
+  { id:'profi', name:'Profi', lo:5, hi:5, bonus:10, hint:'Par 5' },
+  { id:'legende', name:'Legende', lo:6, hi:6, bonus:15, hint:'Par 6' },
+  { id:'marathon', name:'Marathon', lo:7, hi:99, bonus:20, hint:'Par 7+' }
 ];
-function levelFor(par){ return par ? LEVELS.find(l => par >= l.lo && par <= l.hi) || LEVELS[3] : null; }
+function levelFor(par){ return par ? LEVELS.find(l => par >= l.lo && par <= l.hi) || LEVELS[LEVELS.length - 1] : null; }
 function levelTag(par){ const l = levelFor(par); return l ? `<span class="lvl lvl-${l.id}">${l.name}</span>` : ''; }
 function curLevel(){ const id = LS.get('level', 'mittel'); return LEVELS.find(l => l.id === id) || LEVELS[1]; }
 /* Par für die gewählten Bands, zwischengespeichert pro Paar */
@@ -1196,10 +1202,48 @@ function draftPar(){
   if(!parCache.has(k)) parCache.set(k, parFor(draft.start, draft.target));
   return parCache.get(k);
 }
+/* Schritte (Verbindungen) von einem Künstler zu allen anderen im Musiknetz */
+function hopsFrom(src){
+  const g = graph, n = g.baseN, dist = new Uint8Array(n).fill(255);
+  let frontier = [src]; dist[src] = 0;
+  for(let d = 1; d < 16 && frontier.length; d++){
+    const nf = [];
+    for(const x of frontier) for(let k = g.off[x]; k < g.off[x + 1]; k++){ const y = g.nb[k]; if(y < n && dist[y] === 255){ dist[y] = d; nf.push(y); } }
+    frontier = nf;
+  }
+  return dist;
+}
+const LATIN = /^[\u0020-\u024F\u2010-\u2019'’&.!?]+$/;
+/* Lange Ketten: bekannter Start, Ziel ist der bekannteste Künstler in passender Entfernung */
+function farPairFor(level, pool){
+  const g = graph;
+  for(let t = 0; t < 24; t++){
+    const a = pool[Math.floor(Math.random() * pool.length)], ai = g.idx.get(a.id); if(ai === undefined) continue;
+    const dist = hopsFrom(ai), cands = [];
+    for(let i = 0; i < g.baseN; i++){
+      const d = dist[i]; if(d === 255 || d < level.lo || d > level.lo + 3) continue;
+      const nm = g.names[i] || ''; if(!LATIN.test(nm) || /various artists|unknown|anonymous|\[/i.test(nm)) continue;
+      cands.push([i, g.off[i + 1] - g.off[i]]);
+    }
+    cands.sort((x, y) => y[1] - x[1]);
+    const top = cands.slice(0, 60);
+    for(let k = top.length - 1; k > 0; k--){ const j = Math.floor(Math.random() * (k + 1)); [top[k], top[j]] = [top[j], top[k]]; }
+    for(const [i] of top.slice(0, 40)){
+      const b = { id:g.ids[i], name:g.names[i], type:'', country:'', dis:'' };
+      const par = parFor(a, b);
+      if(par && par >= level.lo && par <= level.hi){
+        if(Math.random() < 0.5){ const back = parFor(b, a); if(back && back >= level.lo && back <= level.hi) return { a:b, b:a, par:back }; }
+        return { a, b, par };
+      }
+    }
+  }
+  return null;
+}
 /* Zufälliges Paar bekannter Bands mit passender Schwierigkeit */
 function randomPairFor(level){
   const names = [...new Set([...DAILY_POOL, ...POOL.map(x => x[0])])];
   const pool = names.map(graphByName).filter(Boolean);
+  if(level.lo >= 6){ const far = farPairFor(level, pool); if(far) return far; }
   let best = null;
   for(let t = 0; t < 3000; t++){
     const a = pool[Math.floor(Math.random() * pool.length)], b = pool[Math.floor(Math.random() * pool.length)];
@@ -1354,6 +1398,8 @@ function award(){
     if(game.par && n === game.par) earn('par');
     if(game.par >= 4) earn('schwer');
     if(game.par >= 5) earn('profi');
+    if(game.par >= 6) earn('legende');
+    if(game.par >= 7) earn('marathon');
     if(game.par && n < game.par) earn('unterpar');
     if(game.steps.filter(x => x.link.type === 'band' || x.link.type === 'colleague').length >= 3) earn('bandwechsel');
     if(ms < 120000 && n >= 2) earn('blitz');
@@ -2006,7 +2052,7 @@ function openRandomSheet(after){
   sheet(`<h2>Wie schwer soll’s werden?</h2>
     <p class="muted small">Die App sucht zwei bekannte Bands, deren kürzester Weg genau so lang ist.</p>
     <div class="lvlchoice">${LEVELS.map(l => `<button class="lvlbtn ${l.id === cur ? 'on' : ''}" data-lv="${l.id}">
-      ${levelTag(l.lo)}<span class="txt"><b>${l.hint.replace('Par', 'Kürzester Weg:')} Song${l.hi === 1 ? '' : 's'}</b><small>${l.bonus ? '+' + l.bonus + ' Bonuspunkte' : 'Zum Reinkommen'}</small></span></button>`).join('')}</div>
+      ${levelTag(l.lo)}<span class="txt"><b>${l.hint.replace('Par', 'Kürzester Weg:')} Song${l.hi === 1 ? '' : 's'}</b><small>${l.bonus ? '+' + l.bonus + ' Bonuspunkte' : 'Zum Reinkommen'}${l.lo >= 6 ? ' · Ziel oft ein Geheimtipp' : ''}</small></span></button>`).join('')}</div>
     <button class="btn ghost" data-close>Abbrechen</button>`);
   $$('[data-lv]').forEach(b => b.onclick = async () => {
     LS.set('level', b.dataset.lv);
