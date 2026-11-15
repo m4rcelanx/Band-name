@@ -104,6 +104,9 @@ label{display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--mute
 .link.band .lbl{color:var(--band)} .link.claim .lbl{color:var(--claim)} .link.bad .lbl{color:var(--bad)}
 .link .lbl a{color:inherit}
 
+.seg{display:grid;grid-template-columns:1fr 1fr;background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:3px;gap:3px}
+.seg button{border:0;background:transparent;border-radius:9px;padding:9px 6px;font-size:13px;font-weight:600;color:var(--muted)}
+.seg button.on{background:var(--surface2);color:var(--fg)}
 .chips{display:flex;gap:8px;flex-wrap:wrap}
 .chip{border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:7px 12px;font-size:13px}
 .chip.on{background:var(--ok);border-color:var(--ok);color:#0B1F17;font-weight:600}
@@ -416,26 +419,60 @@ async function findLink(prev, next, opts, prio = 'high'){
 /* ============ Spielzustand ============ */
 let view = 'home';
 let game = LS.get('game', null);
-let draft = { start:null, target:null };
+let draft = { start:null, target:null, best:null };
 let search = { q:'', chip:null, offset:0, items:[], total:0, loading:false, collabOnly:false, seq:0 };
 let verify = null;
 let timerId = null, adding = false;
 let linkInput = '', linkBusyText = '', batchRunning = false;
+const currentMode = () => LS.get('mode', 'search');
+function songMode(m){
+  LS.set('mode', m);
+  $$('[data-mode]').forEach(b => { const on = b.dataset.mode === m; b.classList.toggle('on', on); b.setAttribute('aria-selected', on); });
+  const l = $('#modeLink'), s = $('#modeSearch'); if(l) l.hidden = m !== 'link'; if(s) s.hidden = m !== 'search';
+}
 
 function anchors(){
   if(!game) return [];
-  return game.steps.length ? game.steps[game.steps.length - 1].rec.artists : [game.ch.start];
+  if(game.steps.length) return game.steps[game.steps.length - 1].rec.artists;
+  return game.free ? [] : [game.ch.start];
 }
 const firstWithId = list => (list || []).find(a => a.id) || null;
-function isWin(rec){ return rec.artists.some(a => sameArtist(a, game.ch.target)); }
+function isWin(rec){ return !game.free && rec.artists.some(a => sameArtist(a, game.ch.target)); }
 function fmtTime(ms){ const s = Math.max(0, Math.floor(ms / 1000)); return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0'); }
 function prefetchAnchors(){ if(settings().bandLinks) anchors().filter(a => a.id).forEach(a => artistInfo(a.id).catch(() => {})); }
 
-function newGame(start, target){
-  game = { ch:{ start, target }, steps:[], startedAt:Date.now(), finishedAt:null, won:false };
+function newGame(start, target, best){
+  game = { ch:{ start, target }, steps:[], startedAt:Date.now(), finishedAt:null, won:false, best:best || null };
   LS.set('game', game); view = 'game';
   search = { q:'', chip:start, offset:0, items:[], total:0, loading:false, collabOnly:false, seq:0 };
   render(); runSearch(true); prefetchAnchors();
+}
+function newFreeGame(){
+  game = { free:true, ch:{ start:null, target:null }, steps:[], startedAt:Date.now(), finishedAt:null, won:false, best:null };
+  LS.set('game', game); view = 'game'; songMode('search');
+  search = { q:'', chip:null, offset:0, items:[], total:0, loading:false, collabOnly:false, seq:0 };
+  render();
+}
+/* Freie Kette abschließen: Start- und Zielband aus erstem und letztem Song wählen */
+function openFinishSheet(){
+  if(!game || game.steps.length < 2){ toast('Mindestens zwei Songs, dann kannst du abschließen'); return; }
+  const first = game.steps[0].rec.artists.filter(a => a.id), last = game.steps[game.steps.length - 1].rec.artists.filter(a => a.id);
+  if(!first.length || !last.length){ toast('Erster oder letzter Song hat keinen Künstler aus MusicBrainz'); return; }
+  const opts = (list, name) => list.map((a, i) => `<label class="check"><input type="radio" name="${name}" value="${i}" ${i === 0 ? 'checked' : ''}> ${esc(a.name)}</label>`).join('');
+  sheet(`<h2>Kette abschließen</h2>
+    <p class="muted small">Welche Bands sind Start und Ziel deiner Kette?</p>
+    <span class="eyebrow">Startband (erster Song)</span>${opts(first, 'fs')}
+    <span class="eyebrow">Zielband (letzter Song)</span>${opts(last, 'ft')}
+    <div class="row"><button class="btn ghost" data-close>Weiterbauen</button><button class="btn primary" id="finSave">Abschließen</button></div>`);
+  $('#finSave').onclick = () => {
+    const s = first[+document.querySelector('input[name=fs]:checked').value];
+    const t = last[+document.querySelector('input[name=ft]:checked').value];
+    if(s.id === t.id){ toast('Start und Ziel müssen verschiedene Bands sein'); return; }
+    game.ch = { start:{ id:s.id, name:s.name, type:'', country:'', dis:'' }, target:{ id:t.id, name:t.name, type:'', country:'', dis:'' } };
+    game.steps[0].link = { type:'start', via:[{ id:s.id, name:s.name }] };
+    game.won = true; game.finishedAt = Date.now(); LS.set('game', game); saveHistory();
+    closeSheet(); view = 'result'; render();
+  };
 }
 function addStep(rec, link){
   game.steps.push({ rec, link });
@@ -453,6 +490,10 @@ async function tryAdd(rec, rowEl){
   const s = settings();
   if(s.maxSongs && game.steps.length >= s.maxSongs){ toast(`Limit von ${s.maxSongs} Songs erreicht. Nimm einen Schritt zurück.`); return false; }
   if(isDuplicate(rec)){ toast('Der Song ist schon in deiner Kette'); return false; }
+  if(game.free && !game.steps.length){
+    if(!rec.artists.some(a => a.id)){ toast('Der erste Song braucht einen Künstler aus MusicBrainz'); return false; }
+    addStep(rec, { type:'first' }); return true;
+  }
   adding = true;
   const busy = $('#addBusy'); if(busy){ busy.hidden = false; busy.querySelector('span:last-child').textContent = 'Prüfe Verbindung in MusicBrainz …'; }
   try{
@@ -511,7 +552,9 @@ async function addFromLinks(text){
 }
 function undo(){
   if(!game || !game.steps.length) return;
-  game.steps.pop(); game.won = false; game.finishedAt = null; LS.set('game', game);
+  game.steps.pop(); game.won = false; game.finishedAt = null;
+  if(game.free){ game.ch = { start:null, target:null }; if(game.steps[0]) game.steps[0].link = { type:'first' }; }
+  LS.set('game', game);
   view = 'game'; search.chip = firstWithId(anchors()); search.q = '';
   render(); runSearch(true);
 }
@@ -563,18 +606,24 @@ function homeView(){
   <div class="top"><div class="logo">${LOGO}<h1>Band-Kette</h1></div>
     <button class="iconbtn" id="btnSettings" aria-label="Spielregeln und Einstellungen">${GEAR}</button></div>
   <p class="muted">Von der Startband zur Zielband, Song für Song. Jede Verbindung wird gegen die offene Musikdatenbank MusicBrainz geprüft: gemeinsame Künstler auf einem Song oder belegte Bandmitgliedschaften.</p>
-  ${running ? `<div class="panel"><span class="eyebrow">Laufende Challenge</span>
-    <h3>${esc(game.ch.start.name)} → ${esc(game.ch.target.name)}</h3>
+  ${running ? `<div class="panel"><span class="eyebrow">${game.free ? 'Freie Kette in Arbeit' : 'Laufende Challenge'}</span>
+    <h3>${game.free ? 'Freie Kette' : esc(game.ch.start.name) + ' → ' + esc(game.ch.target.name)}</h3>
     <span class="muted small">${game.steps.length} Songs bisher</span>
-    <div class="row"><button class="btn primary" id="btnResume">Weiterspielen</button><button class="btn ghost" id="btnAbort">Abbrechen</button></div></div>` : ''}
+    <div class="row"><button class="btn primary" id="btnResume">Weiterbauen</button><button class="btn ghost" id="btnAbort">Verwerfen</button></div></div>` : ''}
   <div class="panel">
     <span class="eyebrow">Neue Challenge</span>
     <div class="vs">${pickBox('start', draft.start)}<span class="arrow">→</span>${pickBox('target', draft.target)}</div>
+    ${draft.best ? `<p class="small">Zu schlagen: <b>${draft.best} Songs</b></p>` : ''}
     <div class="row">
       <button class="btn ghost" id="btnRandom">Zufällige Bands</button>
       <button class="btn primary" id="btnStart" ${draft.start && draft.target ? '' : 'disabled'}>Los geht’s</button>
     </div>
     <button class="btn ghost block" id="btnShareCh" ${draft.start && draft.target ? '' : 'disabled'}>Challenge an die Gruppe schicken</button>
+  </div>
+  <div class="panel">
+    <span class="eyebrow">Freie Kette</span>
+    <p class="muted small">Ohne festgelegte Bands einfach Song an Song hängen. Beim Abschließen wählst du Start- und Zielband aus dem ersten und letzten Song und kannst die Kette als Challenge verschicken.</p>
+    <button class="btn block" id="btnFree">Freie Kette bauen</button>
   </div>
   <div class="panel">
     <span class="eyebrow">Vorschläge</span>
@@ -598,8 +647,9 @@ function bindHome(){
   $$('[data-preset]').forEach(b => b.onclick = () => startPreset(PRESETS[+b.dataset.preset], b));
   $$('[data-hist]').forEach(b => b.onclick = () => { const x = LS.get('history', [])[+b.dataset.hist]; if(x && x.code) startVerify(x.code); });
   $('#btnRandom').onclick = randomChallenge;
-  $('#btnStart').onclick = () => newGame(draft.start, draft.target);
-  $('#btnShareCh').onclick = () => shareChallenge(draft.start, draft.target);
+  $('#btnStart').onclick = () => newGame(draft.start, draft.target, draft.best);
+  $('#btnShareCh').onclick = () => shareChallenge(draft.start, draft.target, draft.best);
+  $('#btnFree').onclick = () => { if(game && !game.won && game.steps.length){ toast('Erst die laufende Kette weiterbauen oder verwerfen'); return; } newFreeGame(); };
   $('#btnSettings').onclick = openSettings;
   $('#btnVerify').onclick = () => {
     const v = $('#verifyIn').value.trim(); const m = v.match(/#k=([^\s]+)/);
@@ -621,7 +671,7 @@ async function randomChallenge(){
   const i = Math.floor(Math.random() * POOL.length); let j; do { j = Math.floor(Math.random() * POOL.length); } while(j === i);
   try{
     const a = await findArtist(...POOL[i]); const b = await findArtist(...POOL[j]);
-    draft.start = a; draft.target = b;
+    draft.start = a; draft.target = b; draft.best = null;
   }catch(e){ handleErr(e); }
   render();
 }
@@ -629,6 +679,7 @@ async function randomChallenge(){
 /* ---------- Kette zeichnen ---------- */
 function linkHtml(link, status){
   let cls = 'feat', txt = '';
+  if(link.type === 'first') return '';
   if(link.type === 'start' || link.type === 'feat') txt = 'gemeinsam: ' + link.via.map(a => esc(a.name)).join(', ');
   else if(link.type === 'band'){ cls = 'band'; txt = `<a href="https://musicbrainz.org/artist/${esc(link.a.id)}/relationships" target="_blank" rel="noopener">${esc(link.text)}</a>`; }
   else if(link.type === 'colleague'){ cls = 'band'; txt = `<a href="https://musicbrainz.org/artist/${esc(link.band.id)}/relationships" target="_blank" rel="noopener">${esc(link.text)}</a>`; }
@@ -648,6 +699,12 @@ function endpointNode(a, label, reached){
     <div class="txt"><div class="eyebrow">${label}</div><div class="t1">${esc(a.name)}</div><div class="t2">${esc(artistMeta(a))}</div></div></div>`;
 }
 function chainHtml(g, withTarget){
+  if(!g.ch.start){
+    if(!g.steps.length) return '<div class="node endpoint"><span class="num">●</span><div class="txt"><div class="eyebrow">Freie Kette</div><div class="t1">Such dir einen beliebigen ersten Song aus</div></div></div>';
+    let free = '';
+    g.steps.forEach((st, i) => { free += linkHtml(st.link) + songNode(st.rec, i); });
+    return `<div class="chain">${free}</div>`;
+  }
   let html = endpointNode(g.ch.start, 'Start', true);
   g.steps.forEach((st, i) => { html += linkHtml(st.link) + songNode(st.rec, i); });
   if(withTarget) html += `<div class="link"><span class="bar" style="background:var(--line)"></span><span class="lbl muted">…</span></div>` + endpointNode(g.ch.target, 'Ziel', false);
@@ -662,29 +719,39 @@ function gameView(){
   <div class="gamehead">
     <div class="top">
       <button class="iconbtn" id="btnHome" aria-label="Zur Übersicht"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M15 18l-6-6 6-6"/></svg></button>
-      <div class="route"><b>${esc(game.ch.start.name)}</b><span class="arrow">→</span><b>${esc(game.ch.target.name)}</b></div>
+      <div class="route">${game.free ? '<b>Freie Kette</b>' : `<b>${esc(game.ch.start.name)}</b><span class="arrow">→</span><b>${esc(game.ch.target.name)}</b>`}</div>
       <button class="iconbtn" id="btnUndo" aria-label="Letzten Song entfernen" ${game.steps.length ? '' : 'disabled'}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/></svg></button>
     </div>
-    <div class="stats"><span>Songs <b>${game.steps.length}${s.maxSongs ? '/' + s.maxSongs : ''}</b></span><span>Zeit <b id="clock">${fmtTime(Date.now() - game.startedAt)}</b></span>${claims ? `<span>Unbelegt <b>${claims}</b></span>` : ''}</div>
+    <div class="stats"><span>Songs <b>${game.steps.length}${s.maxSongs ? '/' + s.maxSongs : ''}</b></span>${game.best ? `<span>Zu schlagen <b>${game.best}</b></span>` : ''}<span>Zeit <b id="clock">${fmtTime(Date.now() - game.startedAt)}</b></span>${claims ? `<span>Unbelegt <b>${claims}</b></span>` : ''}</div>
   </div>
   ${chainHtml(game, true)}
+  ${game.free && game.steps.length >= 2 ? '<button class="btn primary block" id="btnFinish">Kette abschließen</button>' : ''}
   ${game.steps.length ? '<button class="btn ghost block" id="btnLinksGame">Linkliste der bisherigen Songs</button>' : ''}
   <div class="panel">
-    <span class="eyebrow">Nächster Song per Spotify-Link</span>
-    <p class="muted small">In Spotify beim Song „Teilen → Link kopieren“ und hier einfügen. Mehrere Links auf einmal gehen auch, z. B. eure Liste aus WhatsApp.</p>
-    <textarea id="spIn" rows="2" placeholder="https://open.spotify.com/track/…" autocomplete="off" autocapitalize="off" spellcheck="false">${esc(linkInput)}</textarea>
-    <div class="row"><button class="btn ghost" id="spPaste">Aus Zwischenablage</button><button class="btn primary" id="spAdd">Hinzufügen</button></div>
-    <div class="busy" id="linkBusy" ${linkBusyText ? '' : 'hidden'}><span class="spin"></span><span>${esc(linkBusyText)}</span></div>
-  </div>
-  <div class="panel">
-    <span class="eyebrow">Oder in der Datenbank suchen</span>
-    <p class="muted small">Der Song muss einen dieser Künstler enthalten${s.bandLinks ? ' oder mit ihm über eine Band verbunden sein' : ''}:</p>
-    <div class="chips" id="chips">${chipsHtml()}</div>
-    <input type="search" id="q" placeholder="${search.chip ? 'Titel oder weiteren Künstler eingrenzen' : 'Songtitel oder Künstler'}" value="${esc(search.q)}" enterkeyhint="search" autocomplete="off">
-    <label class="check small"><input type="checkbox" id="collab" ${search.collabOnly ? 'checked' : ''}> Nur Songs mit mehreren Künstlern</label>
-    <div class="busy" id="addBusy" hidden><span class="spin"></span><span></span></div>
-    <div class="list" id="results">${resultsHtml()}</div>
-    <button class="btn ghost block" id="btnMore" ${moreVisible() ? '' : 'hidden'}>Mehr laden</button>
+    <span class="eyebrow">${game.free && !game.steps.length ? 'Erster Song' : 'Nächster Song'}</span>
+    <div class="seg" role="tablist">
+      <button role="tab" class="${currentMode() === 'search' ? 'on' : ''}" data-mode="search" aria-selected="${currentMode() === 'search'}">In der App suchen</button>
+      <button role="tab" class="${currentMode() === 'link' ? 'on' : ''}" data-mode="link" aria-selected="${currentMode() === 'link'}">Spotify-Link einfügen</button>
+    </div>
+    <div id="modeLink" ${currentMode() === 'link' ? '' : 'hidden'}>
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <p class="muted small">In Spotify beim Song „Teilen → Link kopieren“ und hier einfügen. Mehrere Links auf einmal gehen auch, z. B. eure Liste aus WhatsApp.</p>
+        <textarea id="spIn" rows="2" placeholder="https://open.spotify.com/track/…" autocomplete="off" autocapitalize="off" spellcheck="false">${esc(linkInput)}</textarea>
+        <div class="row"><button class="btn ghost" id="spPaste">Aus Zwischenablage</button><button class="btn primary" id="spAdd">Hinzufügen</button></div>
+        <div class="busy" id="linkBusy" ${linkBusyText ? '' : 'hidden'}><span class="spin"></span><span>${esc(linkBusyText)}</span></div>
+      </div>
+    </div>
+    <div id="modeSearch" ${currentMode() === 'search' ? '' : 'hidden'}>
+      <div style="display:flex;flex-direction:column;gap:12px">
+        ${a.length ? `<p class="muted small">Der Song muss einen dieser Künstler enthalten${s.bandLinks ? ' oder mit ihm über eine Band verbunden sein' : ''}. Antippen filtert die Suche:</p>
+        <div class="chips" id="chips">${chipsHtml()}</div>` : '<p class="muted small">Such nach Titel oder Künstler und tippe den Song an, mit dem deine Kette beginnen soll.</p><div class="chips" id="chips" hidden></div>'}
+        <input type="search" id="q" placeholder="${search.chip ? 'Titel oder weiteren Künstler eingrenzen' : 'Songtitel oder Künstler'}" value="${esc(search.q)}" enterkeyhint="search" autocomplete="off">
+        <label class="check small"><input type="checkbox" id="collab" ${search.collabOnly ? 'checked' : ''}> Nur Songs mit mehreren Künstlern</label>
+        <div class="busy" id="addBusy" hidden><span class="spin"></span><span></span></div>
+        <div class="list" id="results">${resultsHtml()}</div>
+        <button class="btn ghost block" id="btnMore" ${moreVisible() ? '' : 'hidden'}>Mehr laden</button>
+      </div>
+    </div>
   </div>`;
 }
 function chipsHtml(){
@@ -697,7 +764,7 @@ let hintList = [];
 async function loadHints(){
   hintList = [];
   if(!settings().hints || !settings().bandLinks || !game) return;
-  const ids = anchors().map(a => a.id);
+  const ids = anchors().filter(a => a.id).map(a => a.id);
   try{
     const infos = await Promise.all(ids.map(id => artistInfo(id, 'high')));
     const seen = new Set(ids);
@@ -715,7 +782,7 @@ function resultsHtml(){
   const prev = anchors().map(a => a.id);
   return items.map(r => {
     const ok = r.artists.some(a => prev.includes(a.id));
-    const win = r.artists.some(a => a.id === game.ch.target.id);
+    const win = !!game.ch.target && r.artists.some(a => a.id === game.ch.target.id);
     let credit = esc(r.credit);
     r.artists.forEach(a => { if(prev.includes(a.id)) credit = credit.replace(esc(a.name), `<mark>${esc(a.name)}</mark>`); });
     return `<button class="item" data-res="${esc(r.id)}">
@@ -727,6 +794,8 @@ function bindGame(){
   $('#btnHome').onclick = () => { view = 'home'; render(); };
   $('#btnUndo').onclick = undo;
   if($('#btnLinksGame')) $('#btnLinksGame').onclick = () => openLinkList(game, { finished:false });
+  if($('#btnFinish')) $('#btnFinish').onclick = openFinishSheet;
+  $$('[data-mode]').forEach(b => b.onclick = () => songMode(b.dataset.mode));
   const ta = $('#spIn');
   ta.oninput = () => { linkInput = ta.value; };
   ta.addEventListener('paste', () => setTimeout(() => { linkInput = ta.value; if(parseSpotifyIds(ta.value).length || /spotify\.link\//.test(ta.value)) addFromLinks(ta.value); }, 60));
@@ -809,7 +878,7 @@ function openNoLinkSheet(rec){
 /* ---------- Linkliste ---------- */
 function spotifyUrl(rec){ if(rec.spotifyId) return spTrackUrl(rec.spotifyId); return 'https://open.spotify.com/search/' + encodeURIComponent(rec.title + ' ' + (rec.artists[0] ? rec.artists[0].name : '')); }
 function linkListText(g, opts = {}){
-  const head = `🎸 ${g.ch.start.name} → ${g.ch.target.name} (${g.steps.length} Song${g.steps.length === 1 ? '' : 's'}${opts.finished ? '' : ', noch unterwegs'})`;
+  const head = `🎸 ${g.ch.start ? g.ch.start.name + ' → ' + g.ch.target.name : 'Freie Kette'} (${g.steps.length} Song${g.steps.length === 1 ? '' : 's'}${opts.finished ? '' : ', noch unterwegs'})`;
   const lines = [head, ''];
   g.steps.forEach((st, i) => {
     lines.push(`${i + 1}. ${st.rec.title} – ${st.rec.credit}`);
@@ -843,10 +912,12 @@ function resultView(){
     <div class="big">${game.steps.length}</div>
     <span class="muted">Songs · ${fmtTime(game.finishedAt - game.startedAt)}</span>
   </div>
+  ${game.best ? `<div class="verdict ${game.steps.length < game.best ? 'ok' : game.steps.length === game.best ? 'claim' : 'bad'}">${game.steps.length < game.best ? `Rekord geschlagen: ${game.best - game.steps.length} Song${game.best - game.steps.length === 1 ? '' : 's'} weniger als die Vorgabe von ${game.best}` : game.steps.length === game.best ? `Gleichstand mit der Vorgabe von ${game.best} Songs` : `Vorgabe von ${game.best} Songs nicht geschafft`}</div>` : ''}
   <div class="verdict ${claims ? 'claim' : 'ok'}">${claims ? `${claims} von ${game.steps.length} Gliedern sind nicht in MusicBrainz belegt` : 'Alle Glieder sind in MusicBrainz belegt'}</div>
   ${chainHtml(game, false)}
   <div class="panel">
     <button class="btn primary block" id="btnShare">Ergebnis mit Prüf-Link teilen</button>
+    <button class="btn block" id="btnChallenge">Als Challenge verschicken</button>
     <button class="btn block" id="btnLinks">Linkliste erstellen</button>
     <div class="row"><button class="btn ghost" id="btnUndo2">Letzten Song zurück</button><button class="btn ghost" id="btnNew">Neue Challenge</button></div>
   </div>`;
@@ -854,6 +925,10 @@ function resultView(){
 function bindResult(){
   $('#btnShare').onclick = () => shareText(resultText());
   $('#btnLinks').onclick = () => openLinkList(game, { finished:true, code:chainCode(game) });
+  $('#btnChallenge').onclick = () => {
+    const best = game.best ? Math.min(game.best, game.steps.length) : game.steps.length;
+    shareChallenge(game.ch.start, game.ch.target, best);
+  };
   $('#btnUndo2').onclick = undo;
   $('#btnNew').onclick = () => { game = null; LS.del('game'); draft = { start:null, target:null }; view = 'home'; render(); };
 }
@@ -928,7 +1003,7 @@ function verifyView(){
 function bindVerify(){
   $('#btnHome').onclick = () => { view = 'home'; verify = null; render(); };
   if($('#btnVerifyLinks')) $('#btnVerifyLinks').onclick = () => openLinkList(verify.g, { finished:!!verify.reached, code:verify.code });
-  if($('#btnPlaySame')) $('#btnPlaySame').onclick = () => { const g = verify.g; verify = null; newGame(artistPick(g.ch.start), artistPick(g.ch.target)); };
+  if($('#btnPlaySame')) $('#btnPlaySame').onclick = () => { const g = verify.g; verify = null; newGame(artistPick(g.ch.start), artistPick(g.ch.target), g.steps.length || null); };
 }
 
 /* ---------- Teilen ---------- */
@@ -940,17 +1015,18 @@ async function shareText(t){
   if(navigator.share){ try{ await navigator.share({ text:t }); return; }catch(e){ if(e.name === 'AbortError') return; } }
   copyText(t);
 }
-function shareChallenge(a, b){
-  shareText(`Neue Band-Kette: ${a.name} → ${b.name}\nWer schafft es mit den wenigsten Songs?\n${BASE}#c=${a.id}.${b.id}`);
+function shareChallenge(a, b, best){
+  const goal = best ? `Meine Kette hat ${best} Songs. Wer schafft es mit weniger?` : 'Wer schafft es mit den wenigsten Songs?';
+  shareText(`Neue Band-Kette: ${a.name} → ${b.name}\n${goal}\n${BASE}#c=${a.id}.${b.id}${best ? '.' + best : ''}`);
 }
 async function readHash(){
   const h = location.hash;
-  const k = h.match(/^#k=(.+)$/), c = h.match(/^#c=([0-9a-f-]{36})\.([0-9a-f-]{36})$/);
+  const k = h.match(/^#k=(.+)$/), c = h.match(/^#c=([0-9a-f-]{36})\.([0-9a-f-]{36})(?:\.(\d{1,3}))?$/);
   if(k || c) history.replaceState(null, '', BASE);
   if(k){ startVerify(decodeURIComponent(k[1])); return true; }
   if(c){
     toast('Challenge wird geladen …');
-    try{ const a = await artistInfo(c[1], 'high'); const b = await artistInfo(c[2], 'high'); draft.start = artistPick(a); draft.target = artistPick(b); render(); }
+    try{ const a = await artistInfo(c[1], 'high'); const b = await artistInfo(c[2], 'high'); draft.start = artistPick(a); draft.target = artistPick(b); draft.best = c[3] ? +c[3] : null; view = 'home'; render(); }
     catch(e){ handleErr(e); }
   }
   return false;
@@ -976,7 +1052,7 @@ function openArtistSheet(which){
     try{
       list = await searchArtists(q);
       $('#ares').innerHTML = list.map((a, i) => `<button class="item" data-a="${i}"><div class="txt"><div class="t1">${esc(a.name)}</div><div class="t2">${esc(artistMeta(a)) || '&nbsp;'}</div></div></button>`).join('') || '<p class="muted small">Nichts gefunden</p>';
-      $$('[data-a]').forEach(b => b.onclick = () => { draft[which] = list[+b.dataset.a]; closeSheet(); render(); });
+      $$('[data-a]').forEach(b => b.onclick = () => { draft[which] = list[+b.dataset.a]; draft.best = null; closeSheet(); render(); });
     }catch(e){ handleErr(e); }
   }, 600); };
 }
