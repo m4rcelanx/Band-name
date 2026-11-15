@@ -179,13 +179,16 @@ select{width:100%;background:var(--bg);border:1px solid var(--line);border-radiu
 .pbtn.on{color:var(--accent);border-color:var(--accent)}
 .songbtns{display:flex;gap:6px;flex:none}
 body.hasplayer #app{padding-bottom:230px}
+body.hasplayer.hasembed #app{padding-bottom:300px}
+#spHost iframe{display:block;width:100%;border:0;border-radius:12px}
+#plUi{display:flex;flex-direction:column;gap:6px}
 body.hasplayer .toast{bottom:calc(220px + env(safe-area-inset-bottom,0px))}
 </style>
 </head>
 <body>
 <div class="wrap" id="app"></div>
 <div id="sheetRoot"></div>
-<div id="player" hidden aria-label="Player"></div>
+<div id="player" hidden aria-label="Player"><div id="plUi"></div><div id="spHost" hidden></div></div>
 
 <script>
 /* ============ Grundlagen ============ */
@@ -1479,8 +1482,11 @@ async function amSignOut(){ if(mk){ try{ await mk.unauthorize(); }catch(e){} } }
 function amFull(){ return !!(mk && mk.isAuthorized); }
 
 /* ---------- Player ---------- */
-const pl = { queue:[], idx:0, mode:'preview', playing:false, match:null, map:[], t:0, dur:0, busy:false, msg:'' };
+/* Quelle je Song: 'sp' = eingebetteter Spotify-Player (Standard), 'mk' = Apple Music über MusicKit,
+   'audio' = 30-Sekunden-Hörprobe von Apple Music oder Deezer als Ersatz. */
+const pl = { queue:[], idx:0, mode:'preview', cur:null, playing:false, match:null, map:[], t:0, dur:0, busy:false, msg:'', note:'' };
 let plAudio = null;
+function playVia(){ return settings().playVia === 'apple' ? 'apple' : 'spotify'; }
 function canSetVolume(){
   if(canSetVolume.v !== undefined) return canSetVolume.v;
   try{ const a = document.createElement('audio'); a.volume = 0.5; canSetVolume.v = Math.abs(a.volume - 0.5) < 0.01 && !/iPhone|iPad|iPod/.test(navigator.userAgent); }catch(e){ canSetVolume.v = false; }
@@ -1492,16 +1498,80 @@ function audioEl(){
   plAudio = document.createElement('audio'); plAudio.preload = 'auto';
   plAudio.addEventListener('play', plSync); plAudio.addEventListener('pause', plSync);
   plAudio.addEventListener('timeupdate', plTime); plAudio.addEventListener('loadedmetadata', plTime);
-  plAudio.addEventListener('ended', () => { if(pl.idx < pl.queue.length - 1) plGo(pl.idx + 1); else { pl.playing = false; plDraw(); } });
-  plAudio.addEventListener('error', () => { if(pl.mode === 'preview' && pl.match){ pl.msg = 'Hörprobe lässt sich nicht abspielen'; plDraw(); } });
+  plAudio.addEventListener('ended', () => { if(pl.cur !== 'audio') return; if(pl.idx < pl.queue.length - 1) plGo(pl.idx + 1); else { pl.playing = false; plDraw(); } });
+  plAudio.addEventListener('error', () => { if(pl.cur === 'audio' && pl.match){ pl.msg = 'Hörprobe lässt sich nicht abspielen'; plDraw(); } });
   return plAudio;
+}
+
+/* ---------- Spotify: Song-ID finden und eingebetteten Player steuern ---------- */
+async function spFind(rec){
+  if(rec.spotifyId) return rec.spotifyId;
+  const k = recKey(rec), cache = LS.get('spMatch', {}), c = cache[k];
+  if(c && (c.id || Date.now() - c.t < 6 * 3600e3)) return c.id;
+  let id = null;
+  // 1. MusicBrainz kennt bei manchen Aufnahmen den Spotify-Link
+  if(rec.id){
+    try{
+      const r = await mb('recording/' + rec.id + '?inc=url-rels', 'high');
+      for(const rel of (r.relations || [])){ const m = rel.url && String(rel.url.resource || '').match(/open\.spotify\.com\/track\/([A-Za-z0-9]{22})/); if(m){ id = m[1]; break; } }
+    }catch(e){}
+  }
+  // 2. Über den Apple- oder Deezer-Treffer bei Odesli (song.link) den passenden Spotify-Song holen
+  if(!id){
+    let m = null; try{ m = await amFind(rec); }catch(e){}
+    if(m && m.url){ const o = await odesli(m.url); if(o && o.spotifyId) id = o.spotifyId; }
+  }
+  const keys = Object.keys(cache); if(keys.length > 800) keys.slice(0, 200).forEach(x => delete cache[x]);
+  cache[k] = { id, t:Date.now() }; LS.set('spMatch', cache);
+  return id;
+}
+let spCtl = null, spLoading = null;
+function spController(uri){
+  if(spCtl) return Promise.resolve(spCtl);
+  if(spLoading) return spLoading;
+  spLoading = new Promise((res, rej) => {
+    const make = api => {
+      const host = $('#spHost'); host.innerHTML = '<div id="spEmbed"></div>';
+      api.createController($('#spEmbed'), { uri, width:'100%', height:80 }, c => {
+        spCtl = c;
+        c.addListener('playback_update', e => {
+          if(pl.cur !== 'sp') return;
+          const d = e.data || {};
+          pl.t = (d.position || 0) / 1000; pl.dur = (d.duration || 0) / 1000; pl.playing = !d.isPaused;
+          if(pl.playing) pl.spEnded = false;
+          if(d.isPaused && d.duration > 0 && d.position >= d.duration - 800 && !pl.spEnded){ pl.spEnded = true; if(pl.idx < pl.queue.length - 1) plGo(pl.idx + 1); }
+          plSync(); plTime();
+        });
+        res(c);
+      });
+    };
+    if(window.__spApi){ make(window.__spApi); return; }
+    window.onSpotifyIframeApiReady = api => { window.__spApi = api; make(api); };
+    const s = document.createElement('script'); s.src = 'https://open.spotify.com/embed/iframe-api/v1'; s.async = true;
+    s.onerror = () => { spLoading = null; rej(new Error('Spotify-Player konnte nicht geladen werden')); };
+    document.head.appendChild(s);
+    setTimeout(() => { if(!spCtl){ spLoading = null; rej(new Error('Spotify-Player lädt nicht')); } }, 15000);
+  });
+  return spLoading;
+}
+function spShow(on){ const h = $('#spHost'); if(h) h.hidden = !on; }
+
+/* ---------- Abspielen ---------- */
+function plHalt(except){
+  if(except !== 'audio' && plAudio){ try{ plAudio.pause(); }catch(e){} }
+  if(except !== 'sp' && spCtl){ try{ spCtl.pause(); }catch(e){} }
+  if(except !== 'mk' && mk && pl.mode === 'full'){ try{ mk.pause(); }catch(e){} }
 }
 async function playList(recs, start = 0){
   recs = recs.filter(Boolean); if(!recs.length) return;
-  pl.queue = recs; pl.idx = Math.min(Math.max(0, start), recs.length - 1); pl.msg = '';
-  try{ if(!mk && (await amToken())) await musicKit(); }catch(e){ pl.msg = e.message; }
-  pl.mode = amFull() ? 'full' : 'preview';
+  pl.queue = recs; pl.idx = Math.min(Math.max(0, start), recs.length - 1); pl.msg = ''; pl.note = '';
+  pl.mode = 'preview';
+  if(playVia() === 'apple'){
+    try{ if(!mk && (await amToken())) await musicKit(); }catch(e){ pl.msg = e.message; }
+    if(amFull()) pl.mode = 'full';
+  }
   if(pl.mode === 'full'){
+    plHalt('mk'); spShow(false); pl.cur = 'mk';
     pl.busy = true; plDraw();
     const matches = await Promise.all(recs.map(r => amFind(r, { apple:true }).catch(() => null)));
     const ids = [], map = [];
@@ -1511,7 +1581,6 @@ async function playList(recs, start = 0){
     let startAt = map.findIndex(i => i >= pl.idx); if(startAt < 0) startAt = 0;
     pl.idx = map[startAt]; pl.match = matches[pl.idx];
     try{
-      if(plAudio) plAudio.pause();
       await mk.setQueue({ songs:ids, startWith:startAt, startPlaying:true });
       if(canSetVolume()) mk.volume = plVolume();
     }catch(e){ pl.msg = 'Apple Music: ' + (e.message || 'Wiedergabe fehlgeschlagen'); }
@@ -1521,7 +1590,7 @@ async function playList(recs, start = 0){
 }
 async function plGo(i){
   if(i < 0 || i >= pl.queue.length) return;
-  pl.idx = i; pl.msg = '';
+  pl.idx = i; pl.msg = ''; pl.note = '';
   if(pl.mode === 'full' && mk){
     const qi = pl.map.indexOf(i);
     if(qi < 0){ pl.match = null; pl.msg = 'Nicht bei Apple Music gefunden'; plDraw(); return; }
@@ -1529,13 +1598,36 @@ async function plGo(i){
     try{ await mk.changeToMediaAtIndex(qi); await mk.play(); }catch(e){ pl.msg = 'Apple Music: ' + (e.message || 'Fehler'); }
     plDraw(); return;
   }
-  const a = audioEl(); a.pause(); pl.match = null; pl.t = 0; pl.dur = 0; pl.busy = true; plDraw();
   const rec = pl.queue[i];
+  pl.match = null; pl.t = 0; pl.dur = 0; pl.busy = true; pl.playing = false; plDraw();
+  // Spotify zuerst
+  if(playVia() === 'spotify'){
+    let sid = null; try{ sid = await spFind(rec); }catch(e){}
+    if(pl.queue[pl.idx] !== rec) return;
+    if(sid){
+      plHalt('sp'); pl.cur = 'sp'; pl.spEnded = false; pl.busy = false;
+      pl.match = { src:'spotify', title:rec.title, artist:rec.credit, url:spTrackUrl(sid), sid };
+      spShow(true); plDraw();
+      try{
+        const fresh = !spCtl, c = await spController('spotify:track:' + sid);
+        if(pl.queue[pl.idx] !== rec) return;
+        if(!fresh) c.loadUri('spotify:track:' + sid);
+        setTimeout(() => { try{ c.play(); }catch(e){} }, fresh ? 300 : 150);
+        setTimeout(() => { if(pl.cur === 'sp' && pl.queue[pl.idx] === rec && !pl.playing){ pl.note = 'Läuft nichts? Einmal ▶ im Spotify-Player tippen.'; plDraw(); } }, 2500);
+        plMedia();
+      }catch(e){ pl.msg = e.message; plDraw(); }
+      return;
+    }
+    pl.note = 'Nicht bei Spotify gefunden, darum Hörprobe als Ersatz.';
+  }
+  // Ersatz: Hörprobe von Apple Music oder Deezer
+  plHalt('audio'); spShow(false); pl.cur = 'audio';
+  const a = audioEl();
   let m = null, err = null; try{ m = await amFind(rec); }catch(e){ err = e.message; }
   if(pl.queue[pl.idx] !== rec) return;
   pl.busy = false; pl.match = m;
   if(!m || !m.preview || settings().amPreview === false){
-    pl.msg = err ? err : !m ? 'Song nicht gefunden' : settings().amPreview === false ? 'Hörproben sind ausgeschaltet. Melde dich mit Apple Music an oder öffne den Song.' : 'Keine Hörprobe verfügbar';
+    pl.msg = err ? err : !m ? 'Song nicht gefunden' : settings().amPreview === false ? 'Hörproben sind ausgeschaltet. Öffne den Song über den Link.' : 'Keine Hörprobe verfügbar';
     pl.playing = false; plDraw(); return;
   }
   a.src = m.preview; if(canSetVolume()) a.volume = plVolume();
@@ -1543,40 +1635,45 @@ async function plGo(i){
   plMedia(); plDraw();
 }
 function plToggle(){
-  if(pl.mode === 'full' && mk){ if(mk.isPlaying) mk.pause(); else mk.play().catch(() => {}); return; }
+  if(pl.cur === 'mk' && mk){ if(mk.isPlaying) mk.pause(); else mk.play().catch(() => {}); return; }
+  if(pl.cur === 'sp' && spCtl){ spCtl.togglePlay(); return; }
   const a = audioEl(); if(!a.src){ plGo(pl.idx); return; }
   if(a.paused) a.play().catch(() => {}); else a.pause();
 }
 function plPrev(){
-  const t = pl.mode === 'full' && mk ? mk.currentPlaybackTime : plAudio ? plAudio.currentTime : 0;
-  if(t > 3){ plSeek(0); return; }
+  if(pl.t > 3){ plSeek(0); return; }
   if(pl.idx > 0) plGo(pl.idx - 1);
 }
 function plNext(){ if(pl.idx < pl.queue.length - 1) plGo(pl.idx + 1); }
 function plSeek(sec){
-  if(pl.mode === 'full' && mk){ mk.seekToTime(sec).catch(() => {}); return; }
+  if(pl.cur === 'mk' && mk){ mk.seekToTime(sec).catch(() => {}); return; }
+  if(pl.cur === 'sp' && spCtl){ spCtl.seek(sec); return; }
   if(plAudio && plAudio.src){ try{ plAudio.currentTime = sec; }catch(e){} }
 }
 function plSetVolume(v){
   LS.set('vol', v);
-  if(pl.mode === 'full' && mk) mk.volume = v;
+  if(mk) mk.volume = v;
   if(plAudio) plAudio.volume = v;
 }
 function plStop(){
   if(mk){ try{ mk.stop(); }catch(e){} }
+  if(spCtl){ try{ spCtl.pause(); }catch(e){} }
   if(plAudio){ plAudio.pause(); plAudio.removeAttribute('src'); try{ plAudio.load(); }catch(e){} }
-  pl.queue = []; pl.match = null; pl.playing = false; pl.msg = '';
+  spShow(false);
+  pl.queue = []; pl.match = null; pl.playing = false; pl.msg = ''; pl.note = ''; pl.cur = null;
   plDraw(); plMarks();
 }
 function plSync(){
-  pl.playing = pl.mode === 'full' && mk ? !!mk.isPlaying : !!(plAudio && !plAudio.paused && plAudio.src);
-  const b = $('#plPlay'); if(b){ b.innerHTML = pl.playing ? PL_ICON.pause : PL_ICON.play; b.setAttribute('aria-label', pl.playing ? 'Pause' : 'Abspielen'); }
+  if(pl.cur === 'mk' && mk) pl.playing = !!mk.isPlaying;
+  else if(pl.cur === 'audio') pl.playing = !!(plAudio && !plAudio.paused && plAudio.src);
+  const b = $('#plPlay'); if(b && !pl.busy){ b.innerHTML = pl.playing ? PL_ICON.pause : PL_ICON.play; b.setAttribute('aria-label', pl.playing ? 'Pause' : 'Abspielen'); }
   if('mediaSession' in navigator) try{ navigator.mediaSession.playbackState = pl.playing ? 'playing' : 'paused'; }catch(e){}
+  if(pl.playing && pl.note && pl.note.startsWith('Läuft nichts')){ pl.note = ''; const n = $('#plNote'); if(n) n.remove(); }
   plMarks();
 }
 function plTime(){
-  if(pl.mode === 'full' && mk){ pl.t = mk.currentPlaybackTime || 0; pl.dur = mk.currentPlaybackDuration || 0; }
-  else if(plAudio){ pl.t = plAudio.currentTime || 0; pl.dur = isFinite(plAudio.duration) ? plAudio.duration : 0; }
+  if(pl.cur === 'mk' && mk){ pl.t = mk.currentPlaybackTime || 0; pl.dur = mk.currentPlaybackDuration || 0; }
+  else if(pl.cur === 'audio' && plAudio){ pl.t = plAudio.currentTime || 0; pl.dur = isFinite(plAudio.duration) ? plAudio.duration : 0; }
   const s = $('#plSeek'); if(s && !s.matches(':active')){ s.max = Math.max(1, Math.round(pl.dur)); s.value = Math.round(pl.t); }
   const a = $('#plT'); if(a) a.textContent = fmtSec(pl.t);
   const d = $('#plD'); if(d) d.textContent = fmtSec(pl.dur);
@@ -1599,14 +1696,16 @@ function plMarks(){
   $$('[data-play]').forEach(b => { const on = b.dataset.play === cur; b.classList.toggle('on', on); b.textContent = on && pl.playing ? '❚❚' : '▶'; });
 }
 function plDraw(){
-  const root = $('#player'); if(!root) return;
-  if(!pl.queue.length){ root.hidden = true; root.innerHTML = ''; document.body.classList.remove('hasplayer'); return; }
+  const root = $('#player'), ui = $('#plUi'); if(!root || !ui) return;
+  if(!pl.queue.length){ root.hidden = true; ui.innerHTML = ''; document.body.classList.remove('hasplayer'); return; }
   const r = pl.queue[pl.idx], m = pl.match;
   root.hidden = false; document.body.classList.add('hasplayer');
-  const src = pl.mode === 'full' ? 'Apple Music' : 'Hörprobe 30 s' + (m && m.src === 'deezer' ? ' · Deezer' : '');
-  root.innerHTML = `
+  document.body.classList.toggle('hasembed', pl.cur === 'sp');
+  const src = pl.cur === 'sp' ? 'Spotify' : pl.cur === 'mk' ? 'Apple Music' : 'Hörprobe 30 s' + (m && m.src === 'deezer' ? ' · Deezer' : m ? ' · Apple Music' : '');
+  const showMeta = pl.cur !== 'sp';
+  ui.innerHTML = `
     <div class="plrow">
-      ${m && m.art ? `<img class="plart" src="${esc(m.art)}" alt="">` : '<div class="plart"></div>'}
+      ${showMeta ? (m && m.art ? `<img class="plart" src="${esc(m.art)}" alt="">` : '<div class="plart"></div>') : ''}
       <div class="txt"><div class="t1">${esc(m ? m.title : r.title)}</div><div class="t2">${esc(m ? m.artist : r.credit)} · ${pl.idx + 1}/${pl.queue.length} · ${src}</div></div>
       <button class="iconbtn" id="plClose" aria-label="Player schließen">${PL_ICON.close}</button>
     </div>
@@ -1619,13 +1718,13 @@ function plDraw(){
       <button class="iconbtn" id="plPrev" aria-label="Vorheriger Song" ${pl.idx === 0 ? 'disabled' : ''}>${PL_ICON.prev}</button>
       <button class="iconbtn plbig" id="plPlay" aria-label="${pl.playing ? 'Pause' : 'Abspielen'}" ${pl.busy ? 'disabled' : ''}>${pl.busy ? '<span class="spin"></span>' : pl.playing ? PL_ICON.pause : PL_ICON.play}</button>
       <button class="iconbtn" id="plNext" aria-label="Nächster Song" ${pl.idx >= pl.queue.length - 1 ? 'disabled' : ''}>${PL_ICON.next}</button>
-      ${canSetVolume() ? `<span class="plvol">${PL_ICON.vol}<input type="range" id="plVol" min="0" max="100" value="${Math.round(plVolume() * 100)}" aria-label="Lautstärke"></span>` : '<span class="muted small plvol">Lautstärke über die Handytasten</span>'}
+      ${canSetVolume() && pl.cur !== 'sp' ? `<span class="plvol">${PL_ICON.vol}<input type="range" id="plVol" min="0" max="100" value="${Math.round(plVolume() * 100)}" aria-label="Lautstärke"></span>` : `<span class="muted small plvol">${pl.cur === 'sp' ? 'Lautstärke über Gerät' : 'Lautstärke über die Handytasten'}</span>`}
     </div>
     ${pl.msg ? `<p class="small plmsg">${esc(pl.msg)}</p>` : ''}
+    ${pl.note ? `<p class="small muted" id="plNote" style="margin:0">${esc(pl.note)}</p>` : ''}
     <div class="plrow pllinks">
-      ${m && m.url ? `<a class="play" href="${esc(m.url)}" target="_blank" rel="noopener">${m.src === 'deezer' ? 'Deezer' : 'Apple Music'}</a>` : ''}
-      <a class="play" href="${spotifyUrl(r)}" target="_blank" rel="noopener">Spotify</a>
-      ${pl.mode === 'preview' && !amFull() ? '<button class="linkbtn" id="plSignIn">Ganze Songs mit Apple Music</button>' : ''}
+      <a class="play" href="${m && m.src === 'spotify' ? esc(m.url) : spotifyUrl(r)}" target="_blank" rel="noopener">In Spotify öffnen</a>
+      ${m && m.url && m.src !== 'spotify' ? `<a class="play" href="${esc(m.url)}" target="_blank" rel="noopener">${m.src === 'deezer' ? 'Deezer' : 'Apple Music'}</a>` : ''}
     </div>`;
   $('#plClose').onclick = plStop;
   $('#plPlay').onclick = plToggle;
@@ -1633,10 +1732,6 @@ function plDraw(){
   $('#plNext').onclick = plNext;
   const sk = $('#plSeek'); sk.oninput = () => { $('#plT').textContent = fmtSec(+sk.value); }; sk.onchange = () => plSeek(+sk.value);
   if($('#plVol')) $('#plVol').oninput = e => plSetVolume(+e.target.value / 100);
-  if($('#plSignIn')) $('#plSignIn').onclick = async () => {
-    if(!(await amToken())){ openSettings(); toast('Unten in den Einstellungen den Apple-Music-Token eintragen'); return; }
-    try{ if(await amSignIn()){ toast('Mit Apple Music verbunden'); playList(pl.queue, pl.idx); } }catch(e){ toast(e.message || 'Anmeldung abgebrochen'); }
-  };
   plSync(); plTime();
 }
 function playChain(g, start = 0){ if(!g || !g.steps.length){ toast('Noch keine Songs in der Kette'); return; } playList(g.steps.map(s => s.rec), start); }
@@ -2596,8 +2691,9 @@ function openSettings(){
     <label class="toggle"><span>Tipps anzeigen<small>Blendet verbundene Bands als zusätzliche Suchfilter ein.</small></span><input type="checkbox" id="sHint" ${s.hints ? 'checked' : ''}></label>
     <label>Maximale Anzahl Songs (0 = unbegrenzt)<input type="text" inputmode="numeric" id="sMax" value="${s.maxSongs}"></label>
     <span class="eyebrow">Abspielen</span>
-    <p class="muted small">Songs laufen direkt in der App. Ganze Songs gibt es mit Apple-Music-Abo und Anmeldung, sonst 30-Sekunden-Hörproben. Spotify bleibt als Link zum Öffnen in der Spotify-App.</p>
-    <label class="toggle"><span>Hörproben ohne Anmeldung<small>30 Sekunden pro Song über Apple Music, ersatzweise Deezer.</small></span><input type="checkbox" id="sPrev" ${s.amPreview === false ? '' : 'checked'}></label>
+    <p class="muted small">Songs laufen direkt in der App. Standard ist der eingebettete Spotify-Player: Bist du im selben Browser bei Spotify angemeldet, laufen ganze Songs, sonst Hörproben. Was Spotify nicht hat, kommt als Hörprobe von Apple Music oder Deezer.</p>
+    <label>Abspielen über<select id="sVia"><option value="spotify" ${s.playVia === 'apple' ? '' : 'selected'}>Spotify (Standard)</option><option value="apple" ${s.playVia === 'apple' ? 'selected' : ''}>Apple Music (mit Token und Abo)</option></select></label>
+    <label class="toggle"><span>Ersatz-Hörproben<small>30 Sekunden von Apple Music oder Deezer, wenn Spotify den Song nicht hat.</small></span><input type="checkbox" id="sPrev" ${s.amPreview === false ? '' : 'checked'}></label>
     <label>Apple-Music-Land (zwei Buchstaben)<input type="text" id="sStore" maxlength="2" autocapitalize="off" value="${esc(s.amStore || 'de')}"></label>
     <label>Apple-Music-Entwicklertoken<textarea id="sTok" rows="2" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="eyJ…">${esc(s.amToken || '')}</textarea></label>
     <p class="small" id="amInfo"></p>
@@ -2636,7 +2732,7 @@ function openSettings(){
     const store = /^[a-z]{2}$/i.test($('#sStore').value.trim()) ? $('#sStore').value.trim().toLowerCase() : 'de';
     if(tok !== (s.amToken || '') || store !== (s.amStore || 'de')){ mk = null; mkLoading = null; LS.del('amMatch2'); }
     LS.set('settings', { ...LS.get('settings', {}), name:$('#sName').value.trim().slice(0, 20), maxSongs:Math.max(0, parseInt($('#sMax').value, 10) || 0), bandLinks:$('#sBand').checked,
-      colleagues:$('#sCol').checked, claims:$('#sClaim').checked, hints:$('#sHint').checked, amPreview:$('#sPrev').checked, amToken:tok, amStore:store });
+      colleagues:$('#sCol').checked, claims:$('#sClaim').checked, hints:$('#sHint').checked, amPreview:$('#sPrev').checked, amToken:tok, amStore:store, playVia:$('#sVia').value });
     closeSheet(); toast('Gespeichert'); render();
   };
 }
