@@ -1971,9 +1971,8 @@ function homeView(){
     <div id="dailyBox"><div class="busy"><span class="spin"></span><span>Wird vorbereitet …</span></div></div>
   </div>
   <div class="panel">
-    <span class="eyebrow">Eigene Challenge</span>
-    <div class="levelpick"><span class="small muted">Schwierigkeit (kürzester Weg)</span>${levelChips()}
-      <button class="btn dicebtn block" id="btnRandom">${ICON.dice} Zufällige Bands: ${esc(curLevel().name)}</button></div>
+    <div class="rankrow"><span class="eyebrow">Eigene Challenge</span></div>
+    <button class="btn small dicebtn" id="btnRandom">${ICON.dice} Zufällige Bands</button>
     <div class="vs">${pickBox('start', draft.start)}<button class="swap" id="btnSwap" aria-label="Start und Ziel tauschen" ${draft.start || draft.target ? '' : 'disabled'}>${ICON.swap}</button>${pickBox('target', draft.target)}</div>
     ${draft.duel ? `<p class="small">Duell gegen <b>${esc(draft.duel.name)}</b>: ${draft.duel.songs} Songs in ${fmtTime(draft.duel.secs * 1000)}. Weniger Songs gewinnen, bei Gleichstand die Zeit.</p>` : draft.best ? `<p class="small">Zu schlagen: <b>${draft.best} Songs</b></p>` : ''}
     ${ready ? '<div class="levelinfo" id="levelInfo"><span class="spin"></span><span class="small muted">Schwierigkeit wird berechnet …</span></div>' : ''}
@@ -2028,8 +2027,7 @@ async function fillDaily(){
 function bindHome(){
   $$('[data-pick]').forEach(b => b.onclick = () => openArtistSheet(b.dataset.pick));
   $$('[data-hist]').forEach(b => b.onclick = () => { const x = LS.get('history', [])[+b.dataset.hist]; if(x && x.code) startVerify(x.code); });
-  $('#btnRandom').onclick = randomChallenge;
-  bindLevelChips();
+  $('#btnRandom').onclick = () => openRandomSheet();
   $('#race').onchange = e => { draft.race = e.target.checked; };
   const meta = () => ({ duel:draft.duel || null, timeLimit:draft.race ? 180000 : null, par:draftPar() || null });
   $$('[data-level]').forEach(b => b.onclick = () => { LS.set('level', b.dataset.level); render(); });
@@ -2063,7 +2061,7 @@ async function startPreset(p, btn){
     newGame(a, b);
   }catch(e){ handleErr(e); tag.textContent = 'Spielen'; }
 }
-const APP_VERSION = '15.11.2026 · 8';
+const APP_VERSION = '15.11.2026 · 9';
 function levelChips(){
   const cur = curLevel().id;
   return `<div class="lvlrow" role="radiogroup" aria-label="Schwierigkeit">${LEVELS.map(l => `<button role="radio" aria-checked="${l.id === cur}" class="lvlchip lvl-${l.id} ${l.id === cur ? 'on' : ''}" data-level="${l.id}"><b>${l.name}</b><small>${l.hint.replace('Par ', '')} Songs</small></button>`).join('')}</div>`;
@@ -2869,8 +2867,7 @@ function partyView(){
     <div class="panel"><p class="muted small">Alle Teams spielen nacheinander dieselbe Aufgabe auf diesem Handy. Gewertet wird mit Par und Punkten; wer aufgibt oder die App lösen lässt, bekommt 0 Punkte.</p>
       <span class="eyebrow">Aufgabe</span>
       <div class="vs">${pickBox('start', draft.start)}<span class="arrow">→</span>${pickBox('target', draft.target)}</div>
-      <span class="small muted">Schwierigkeit für zufällige Bands</span>${levelChips()}
-      <button class="btn dicebtn block" id="pRandom">${ICON.dice} Zufällige Bands: ${esc(curLevel().name)}</button>
+      <button class="btn ghost" id="pRandom">Zufällige Bands</button>
       <label>Teams, eins pro Zeile<textarea id="pTeams" rows="4" autocomplete="off">Team 1\nTeam 2</textarea></label>
       <label>Zeitlimit pro Team<select id="pTime"><option value="0">ohne</option><option value="180">3 Minuten</option><option value="300" selected>5 Minuten</option></select></label>
       <button class="btn primary" id="pStart" ${draft.start && draft.target ? '' : 'disabled'}>Party starten</button></div>`;
@@ -2891,8 +2888,7 @@ function bindParty(){
   const party = LS.get('party', null);
   if(!party){
     $$('[data-pick]').forEach(b => b.onclick = () => openArtistSheet(b.dataset.pick));
-    $('#pRandom').onclick = async () => { await randomChallenge(); view = 'party'; render(); };
-    bindLevelChips();
+    $('#pRandom').onclick = () => openRandomSheet(() => { view = 'party'; render(); });
     $('#pStart').onclick = async () => {
       const teams = $('#pTeams').value.split('\n').map(s => s.trim()).filter(Boolean).slice(0, 8);
       if(teams.length < 2){ toast('Mindestens zwei Teams eintragen'); return; }
