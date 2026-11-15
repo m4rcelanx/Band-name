@@ -159,11 +159,33 @@ select{width:100%;background:var(--bg);border:1px solid var(--line);border-radiu
 .verdict.claim{background:color-mix(in srgb,var(--claim) 15%,transparent);color:var(--claim)}
 .verdict.bad{background:color-mix(in srgb,var(--bad) 15%,transparent);color:var(--bad)}
 @media (prefers-reduced-motion:reduce){.shake,.spin{animation:none}}
+#player{position:fixed;left:0;right:0;bottom:0;z-index:15;background:var(--surface);border-top:1px solid var(--line);padding:10px max(16px,env(safe-area-inset-right,0px)) calc(10px + env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px));display:flex;flex-direction:column;gap:6px;box-shadow:0 -8px 24px rgba(0,0,0,.35)}
+#player>*{width:100%;max-width:640px;margin:0 auto}
+.plrow{display:flex;align-items:center;gap:10px;min-width:0}
+.plrow .txt{min-width:0;flex:1}
+.plrow .t1{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.plrow .t2{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.plart{width:44px;height:44px;border-radius:8px;background:var(--surface2);flex:none;object-fit:cover}
+.pltime{font:500 11px var(--f-mono);color:var(--muted);min-width:34px;text-align:center;font-variant-numeric:tabular-nums}
+#player input[type=range]{flex:1;min-width:0;accent-color:var(--accent);padding:0;min-height:24px;background:none;border:0}
+.plctl{justify-content:center}
+.plctl .iconbtn{width:44px;height:44px;color:var(--fg)}
+.plctl .iconbtn:disabled{opacity:.35}
+.plctl .plbig{width:54px;height:54px;border-radius:50%;background:var(--accent);color:var(--accent-ink);border:0}
+.plvol{display:flex;align-items:center;gap:6px;flex:1;max-width:160px;color:var(--muted)}
+.plmsg{margin:0;color:var(--claim)}
+.pllinks{gap:8px;flex-wrap:wrap}
+.pbtn{cursor:pointer;background:none;min-width:34px}
+.pbtn.on{color:var(--accent);border-color:var(--accent)}
+.songbtns{display:flex;gap:6px;flex:none}
+body.hasplayer #app{padding-bottom:230px}
+body.hasplayer .toast{bottom:calc(220px + env(safe-area-inset-bottom,0px))}
 </style>
 </head>
 <body>
 <div class="wrap" id="app"></div>
 <div id="sheetRoot"></div>
+<div id="player" hidden aria-label="Player"></div>
 
 <script>
 /* ============ Grundlagen ============ */
@@ -1283,6 +1305,295 @@ function giveUpParty(){
   game = null; LS.del('game'); view = 'party'; render();
 }
 
+/* ============ Abspielen: Apple Music (MusicKit) und Hörproben ============ */
+/* Songs werden über die öffentliche iTunes-Suche einem Apple-Music-Song zugeordnet.
+   Mit Entwicklertoken und Apple-Music-Anmeldung spielt MusicKit ganze Songs (Abo nötig),
+   sonst spielt ein <audio>-Element die 30-Sekunden-Hörprobe. Spotify bleibt als Link. */
+const PL_ICON = {
+  play:'<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>',
+  pause:'<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>',
+  prev:'<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h2v14H6zM20 5v14L9 12z"/></svg>',
+  next:'<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M16 5h2v14h-2zM4 5v14l11-7z"/></svg>',
+  close:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+  vol:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 9h4l5-4v14l-5-4H4z" fill="currentColor"/><path d="M16 9a4 4 0 010 6M18.5 6.5a7.5 7.5 0 010 11"/></svg>'
+};
+const AM_ORIGIN = 'https://m4rcelanx.github.io';
+const playReg = new Map();
+function recKey(r){ return r.id || r.spotifyId || ((r.title || '') + '|' + (r.credit || '')); }
+function playBtn(rec){
+  const k = recKey(rec); playReg.set(k, rec);
+  const on = pl.queue.length && pl.queue[pl.idx] && recKey(pl.queue[pl.idx]) === k;
+  return `<button class="play pbtn ${on ? 'on' : ''}" data-play="${esc(k)}" aria-label="${esc(rec.title)} abspielen">${on && pl.playing ? '❚❚' : '▶'}</button>`;
+}
+
+/* ---------- Abgleich mit Apple Music ---------- */
+const amNorm = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+  .replace(/\s*[\(\[][^\)\]]*(feat|ft\.|with|remaster|version|edit|mono|stereo|live|deluxe)[^\)\]]*[\)\]]/g, '')
+  .replace(/\s+-\s+.*(remaster|version|edit|mix|live).*$/, '').replace(/&/g, 'and').replace(/[^a-z0-9]+/g, ' ').trim();
+function amScore(rec, t){
+  const want = amNorm(rec.title), got = amNorm(t.trackName);
+  let s = 0;
+  if(want && got === want) s += 6; else if(want && (got.startsWith(want) || want.startsWith(got))) s += 3; else if(want && got.includes(want)) s += 1; else return -1;
+  const who = amNorm(t.artistName);
+  const names = (rec.artists || []).map(a => amNorm(a.name)).filter(Boolean);
+  const hits = names.filter(n => who.includes(n) || n.includes(who)).length;
+  if(!hits) return -1;
+  s += 2 + hits;
+  if(/remix|live|karaoke|instrumental/i.test(t.trackName) && !/remix|live|karaoke|instrumental/i.test(rec.title)) s -= 4;
+  if(t.previewUrl) s += 1;
+  return s;
+}
+let jsonpN = 0;
+function jsonp(url){
+  return new Promise((res, rej) => {
+    const cb = '__bkcb' + (++jsonpN), s = document.createElement('script');
+    const done = () => { delete window[cb]; s.remove(); clearTimeout(to); };
+    const to = setTimeout(() => { done(); rej(new Error('Apple Music antwortet nicht')); }, 9000);
+    window[cb] = j => { done(); res(j); };
+    s.onerror = () => { done(); rej(new Error('Apple Music nicht erreichbar')); };
+    s.src = url + (url.includes('?') ? '&' : '?') + 'callback=' + cb;
+    document.head.appendChild(s);
+  });
+}
+async function amFind(rec){
+  const k = recKey(rec), cache = LS.get('amMatch', {});
+  if(k in cache) return cache[k];
+  const artist = rec.artists && rec.artists[0] ? rec.artists[0].name : (rec.credit || '');
+  const term = (amNorm(rec.title) + ' ' + artist).trim();
+  const j = await jsonp('https://itunes.apple.com/search?media=music&entity=song&limit=20&country=' + amStorefront() + '&term=' + encodeURIComponent(term));
+  let best = null, bs = 0;
+  for(const t of (j.results || [])){ const sc = amScore(rec, t); if(sc > bs){ bs = sc; best = t; } }
+  const out = best ? { id:String(best.trackId), title:best.trackName, artist:best.artistName, preview:best.previewUrl || null,
+    url:(best.trackViewUrl || '').replace(/[?&]uo=\d+/, ''), art:(best.artworkUrl100 || '').replace('100x100bb', '200x200bb'), dur:best.trackTimeMillis || 0 } : null;
+  const keys = Object.keys(cache); if(keys.length > 800) keys.slice(0, 200).forEach(x => delete cache[x]);
+  cache[k] = out; LS.set('amMatch', cache);
+  return out;
+}
+function amStorefront(){ return (settings().amStore || 'de').toLowerCase(); }
+
+/* ---------- MusicKit (ganze Songs mit Apple-Music-Abo) ---------- */
+let mk = null, mkLoading = null;
+function amTokenInfo(tok){
+  try{
+    const parts = String(tok || '').trim().split('.'); if(parts.length !== 3) return null;
+    const p = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
+    return { exp:p.exp ? new Date(p.exp * 1000) : null, origin:p.origin || null };
+  }catch(e){ return null; }
+}
+let amFileToken = null;
+async function amToken(){
+  const s = settings().amToken; if(s) return s.trim();
+  if(amFileToken === null){
+    try{ const r = await fetch(new URL('apple-music-token.txt', BASE).href, { cache:'no-cache' }); amFileToken = r.ok ? (await r.text()).trim() : ''; }catch(e){ amFileToken = ''; }
+    if(amFileToken && !amTokenInfo(amFileToken)) amFileToken = '';
+  }
+  return amFileToken;
+}
+async function musicKit(){
+  if(mk) return mk;
+  if(mkLoading) return mkLoading;
+  mkLoading = (async () => {
+    const tok = await amToken(); if(!tok) return null;
+    const info = amTokenInfo(tok); if(info && info.exp && info.exp < new Date()) throw new Error('Apple-Music-Token ist abgelaufen');
+    if(!window.MusicKit){
+      await new Promise((res, rej) => {
+        const s = document.createElement('script'); s.src = 'https://js-cdn.music.apple.com/musickit/v3/musickit.js'; s.async = true;
+        s.onerror = () => rej(new Error('MusicKit konnte nicht geladen werden'));
+        document.addEventListener('musickitloaded', res, { once:true });
+        document.head.appendChild(s);
+        setTimeout(() => window.MusicKit ? res() : rej(new Error('MusicKit lädt nicht')), 15000);
+      });
+    }
+    await window.MusicKit.configure({ developerToken:tok, app:{ name:'Band-Kette', build:'1.0' }, storefrontId:amStorefront() });
+    mk = window.MusicKit.getInstance();
+    mk.addEventListener('playbackStateDidChange', plSync);
+    mk.addEventListener('playbackTimeDidChange', plTime);
+    mk.addEventListener('nowPlayingItemDidChange', () => { const i = mk.nowPlayingItemIndex; if(pl.mode === 'full' && i >= 0 && pl.map[i] !== undefined){ pl.idx = pl.map[i]; plDraw(); } });
+    return mk;
+  })();
+  try{ return await mkLoading; } catch(e){ mkLoading = null; throw e; }
+}
+async function amSignIn(){
+  const m = await musicKit(); if(!m) throw new Error('Erst den Apple-Music-Entwicklertoken eintragen');
+  await m.authorize(); return m.isAuthorized;
+}
+async function amSignOut(){ if(mk){ try{ await mk.unauthorize(); }catch(e){} } }
+function amFull(){ return !!(mk && mk.isAuthorized); }
+
+/* ---------- Player ---------- */
+const pl = { queue:[], idx:0, mode:'preview', playing:false, match:null, map:[], t:0, dur:0, busy:false, msg:'' };
+let plAudio = null;
+function canSetVolume(){
+  if(canSetVolume.v !== undefined) return canSetVolume.v;
+  try{ const a = document.createElement('audio'); a.volume = 0.5; canSetVolume.v = Math.abs(a.volume - 0.5) < 0.01 && !/iPhone|iPad|iPod/.test(navigator.userAgent); }catch(e){ canSetVolume.v = false; }
+  return canSetVolume.v;
+}
+function plVolume(){ const v = LS.get('vol', 0.8); return typeof v === 'number' ? Math.min(1, Math.max(0, v)) : 0.8; }
+function audioEl(){
+  if(plAudio) return plAudio;
+  plAudio = document.createElement('audio'); plAudio.preload = 'auto';
+  plAudio.addEventListener('play', plSync); plAudio.addEventListener('pause', plSync);
+  plAudio.addEventListener('timeupdate', plTime); plAudio.addEventListener('loadedmetadata', plTime);
+  plAudio.addEventListener('ended', () => { if(pl.idx < pl.queue.length - 1) plGo(pl.idx + 1); else { pl.playing = false; plDraw(); } });
+  plAudio.addEventListener('error', () => { if(pl.mode === 'preview' && pl.match){ pl.msg = 'Hörprobe lässt sich nicht abspielen'; plDraw(); } });
+  return plAudio;
+}
+async function playList(recs, start = 0){
+  recs = recs.filter(Boolean); if(!recs.length) return;
+  pl.queue = recs; pl.idx = Math.min(Math.max(0, start), recs.length - 1); pl.msg = '';
+  try{ if(!mk && (await amToken())) await musicKit(); }catch(e){ pl.msg = e.message; }
+  pl.mode = amFull() ? 'full' : 'preview';
+  if(pl.mode === 'full'){
+    pl.busy = true; plDraw();
+    const matches = await Promise.all(recs.map(r => amFind(r).catch(() => null)));
+    const ids = [], map = [];
+    matches.forEach((m, i) => { if(m){ map[ids.length] = i; ids.push(m.id); } });
+    pl.map = map; pl.matches = matches; pl.busy = false;
+    if(!ids.length){ pl.match = null; pl.msg = 'Keiner der Songs ist bei Apple Music zu finden'; plDraw(); return; }
+    let startAt = map.findIndex(i => i >= pl.idx); if(startAt < 0) startAt = 0;
+    pl.idx = map[startAt]; pl.match = matches[pl.idx];
+    try{
+      if(plAudio) plAudio.pause();
+      await mk.setQueue({ songs:ids, startWith:startAt, startPlaying:true });
+      if(canSetVolume()) mk.volume = plVolume();
+    }catch(e){ pl.msg = 'Apple Music: ' + (e.message || 'Wiedergabe fehlgeschlagen'); }
+    plDraw(); return;
+  }
+  await plGo(pl.idx);
+}
+async function plGo(i){
+  if(i < 0 || i >= pl.queue.length) return;
+  pl.idx = i; pl.msg = '';
+  if(pl.mode === 'full' && mk){
+    const qi = pl.map.indexOf(i);
+    if(qi < 0){ pl.match = null; pl.msg = 'Nicht bei Apple Music gefunden'; plDraw(); return; }
+    pl.match = pl.matches[i];
+    try{ await mk.changeToMediaAtIndex(qi); await mk.play(); }catch(e){ pl.msg = 'Apple Music: ' + (e.message || 'Fehler'); }
+    plDraw(); return;
+  }
+  const a = audioEl(); a.pause(); pl.match = null; pl.t = 0; pl.dur = 0; pl.busy = true; plDraw();
+  const rec = pl.queue[i];
+  let m = null; try{ m = await amFind(rec); }catch(e){ pl.msg = e.message; }
+  if(pl.queue[pl.idx] !== rec) return;
+  pl.busy = false; pl.match = m;
+  if(!m || !m.preview || settings().amPreview === false){
+    pl.msg = !m ? 'Nicht bei Apple Music gefunden' : settings().amPreview === false ? 'Hörproben sind ausgeschaltet. Melde dich mit Apple Music an oder öffne den Song.' : 'Keine Hörprobe verfügbar';
+    pl.playing = false; plDraw(); return;
+  }
+  a.src = m.preview; if(canSetVolume()) a.volume = plVolume();
+  try{ await a.play(); }catch(e){ pl.msg = 'Zum Abspielen auf ▶ tippen'; }
+  plMedia(); plDraw();
+}
+function plToggle(){
+  if(pl.mode === 'full' && mk){ if(mk.isPlaying) mk.pause(); else mk.play().catch(() => {}); return; }
+  const a = audioEl(); if(!a.src){ plGo(pl.idx); return; }
+  if(a.paused) a.play().catch(() => {}); else a.pause();
+}
+function plPrev(){
+  const t = pl.mode === 'full' && mk ? mk.currentPlaybackTime : plAudio ? plAudio.currentTime : 0;
+  if(t > 3){ plSeek(0); return; }
+  if(pl.idx > 0) plGo(pl.idx - 1);
+}
+function plNext(){ if(pl.idx < pl.queue.length - 1) plGo(pl.idx + 1); }
+function plSeek(sec){
+  if(pl.mode === 'full' && mk){ mk.seekToTime(sec).catch(() => {}); return; }
+  if(plAudio && plAudio.src){ try{ plAudio.currentTime = sec; }catch(e){} }
+}
+function plSetVolume(v){
+  LS.set('vol', v);
+  if(pl.mode === 'full' && mk) mk.volume = v;
+  if(plAudio) plAudio.volume = v;
+}
+function plStop(){
+  if(mk){ try{ mk.stop(); }catch(e){} }
+  if(plAudio){ plAudio.pause(); plAudio.removeAttribute('src'); try{ plAudio.load(); }catch(e){} }
+  pl.queue = []; pl.match = null; pl.playing = false; pl.msg = '';
+  plDraw(); plMarks();
+}
+function plSync(){
+  pl.playing = pl.mode === 'full' && mk ? !!mk.isPlaying : !!(plAudio && !plAudio.paused && plAudio.src);
+  const b = $('#plPlay'); if(b){ b.innerHTML = pl.playing ? PL_ICON.pause : PL_ICON.play; b.setAttribute('aria-label', pl.playing ? 'Pause' : 'Abspielen'); }
+  if('mediaSession' in navigator) try{ navigator.mediaSession.playbackState = pl.playing ? 'playing' : 'paused'; }catch(e){}
+  plMarks();
+}
+function plTime(){
+  if(pl.mode === 'full' && mk){ pl.t = mk.currentPlaybackTime || 0; pl.dur = mk.currentPlaybackDuration || 0; }
+  else if(plAudio){ pl.t = plAudio.currentTime || 0; pl.dur = isFinite(plAudio.duration) ? plAudio.duration : 0; }
+  const s = $('#plSeek'); if(s && !s.matches(':active')){ s.max = Math.max(1, Math.round(pl.dur)); s.value = Math.round(pl.t); }
+  const a = $('#plT'); if(a) a.textContent = fmtSec(pl.t);
+  const d = $('#plD'); if(d) d.textContent = fmtSec(pl.dur);
+}
+const fmtSec = s => { s = Math.max(0, Math.floor(s || 0)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+function plMedia(){
+  if(!('mediaSession' in navigator) || !window.MediaMetadata) return;
+  const r = pl.queue[pl.idx], m = pl.match; if(!r) return;
+  try{
+    navigator.mediaSession.metadata = new MediaMetadata({ title:m ? m.title : r.title, artist:m ? m.artist : r.credit, album:'Band-Kette', artwork:m && m.art ? [{ src:m.art, sizes:'200x200', type:'image/jpeg' }] : [] });
+    navigator.mediaSession.setActionHandler('play', plToggle);
+    navigator.mediaSession.setActionHandler('pause', plToggle);
+    navigator.mediaSession.setActionHandler('previoustrack', plPrev);
+    navigator.mediaSession.setActionHandler('nexttrack', plNext);
+    navigator.mediaSession.setActionHandler('seekto', d => plSeek(d.seekTime || 0));
+  }catch(e){}
+}
+function plMarks(){
+  const cur = pl.queue.length ? recKey(pl.queue[pl.idx]) : null;
+  $$('[data-play]').forEach(b => { const on = b.dataset.play === cur; b.classList.toggle('on', on); b.textContent = on && pl.playing ? '❚❚' : '▶'; });
+}
+function plDraw(){
+  const root = $('#player'); if(!root) return;
+  if(!pl.queue.length){ root.hidden = true; root.innerHTML = ''; document.body.classList.remove('hasplayer'); return; }
+  const r = pl.queue[pl.idx], m = pl.match;
+  root.hidden = false; document.body.classList.add('hasplayer');
+  const src = pl.mode === 'full' ? 'Apple Music' : 'Hörprobe 30 s';
+  root.innerHTML = `
+    <div class="plrow">
+      ${m && m.art ? `<img class="plart" src="${esc(m.art)}" alt="">` : '<div class="plart"></div>'}
+      <div class="txt"><div class="t1">${esc(m ? m.title : r.title)}</div><div class="t2">${esc(m ? m.artist : r.credit)} · ${pl.idx + 1}/${pl.queue.length} · ${src}</div></div>
+      <button class="iconbtn" id="plClose" aria-label="Player schließen">${PL_ICON.close}</button>
+    </div>
+    <div class="plrow">
+      <span class="pltime" id="plT">${fmtSec(pl.t)}</span>
+      <input type="range" id="plSeek" min="0" max="${Math.max(1, Math.round(pl.dur))}" value="${Math.round(pl.t)}" step="1" aria-label="Position im Song">
+      <span class="pltime" id="plD">${fmtSec(pl.dur)}</span>
+    </div>
+    <div class="plrow plctl">
+      <button class="iconbtn" id="plPrev" aria-label="Vorheriger Song" ${pl.idx === 0 ? 'disabled' : ''}>${PL_ICON.prev}</button>
+      <button class="iconbtn plbig" id="plPlay" aria-label="${pl.playing ? 'Pause' : 'Abspielen'}" ${pl.busy ? 'disabled' : ''}>${pl.busy ? '<span class="spin"></span>' : pl.playing ? PL_ICON.pause : PL_ICON.play}</button>
+      <button class="iconbtn" id="plNext" aria-label="Nächster Song" ${pl.idx >= pl.queue.length - 1 ? 'disabled' : ''}>${PL_ICON.next}</button>
+      ${canSetVolume() ? `<span class="plvol">${PL_ICON.vol}<input type="range" id="plVol" min="0" max="100" value="${Math.round(plVolume() * 100)}" aria-label="Lautstärke"></span>` : '<span class="muted small plvol">Lautstärke über die Handytasten</span>'}
+    </div>
+    ${pl.msg ? `<p class="small plmsg">${esc(pl.msg)}</p>` : ''}
+    <div class="plrow pllinks">
+      ${m && m.url ? `<a class="play" href="${esc(m.url)}" target="_blank" rel="noopener">Apple Music</a>` : ''}
+      <a class="play" href="${spotifyUrl(r)}" target="_blank" rel="noopener">Spotify</a>
+      ${pl.mode === 'preview' && !amFull() ? '<button class="linkbtn" id="plSignIn">Ganze Songs mit Apple Music</button>' : ''}
+    </div>`;
+  $('#plClose').onclick = plStop;
+  $('#plPlay').onclick = plToggle;
+  $('#plPrev').onclick = plPrev;
+  $('#plNext').onclick = plNext;
+  const sk = $('#plSeek'); sk.oninput = () => { $('#plT').textContent = fmtSec(+sk.value); }; sk.onchange = () => plSeek(+sk.value);
+  if($('#plVol')) $('#plVol').oninput = e => plSetVolume(+e.target.value / 100);
+  if($('#plSignIn')) $('#plSignIn').onclick = async () => {
+    if(!(await amToken())){ openSettings(); toast('Unten in den Einstellungen den Apple-Music-Token eintragen'); return; }
+    try{ if(await amSignIn()){ toast('Mit Apple Music verbunden'); playList(pl.queue, pl.idx); } }catch(e){ toast(e.message || 'Anmeldung abgebrochen'); }
+  };
+  plSync(); plTime();
+}
+function playChain(g, start = 0){ if(!g || !g.steps.length){ toast('Noch keine Songs in der Kette'); return; } playList(g.steps.map(s => s.rec), start); }
+/* Ein Klick auf ▶ an einem Song spielt die ganze Kette ab diesem Song */
+document.addEventListener('click', e => {
+  const b = e.target.closest('[data-play]'); if(!b) return;
+  e.preventDefault();
+  const k = b.dataset.play;
+  if(pl.queue.length && recKey(pl.queue[pl.idx]) === k){ plToggle(); return; }
+  const scope = b.closest('.chain, .list, .sheet') || document;
+  const keys = [...scope.querySelectorAll('[data-play]')].map(x => x.dataset.play);
+  const uniq = keys.filter((x, i) => keys.indexOf(x) === i);
+  playList(uniq.map(x => playReg.get(x)), Math.max(0, uniq.indexOf(k)));
+});
+
 /* ============ Rendering ============ */
 const LOGO = `<svg width="34" height="34" viewBox="0 0 34 34" aria-hidden="true"><rect width="34" height="34" rx="9" fill="#FF6B3D"/><circle cx="10" cy="11" r="4" fill="#15121F"/><circle cx="24" cy="23" r="4" fill="#15121F"/><path d="M12.5 13.5 21.5 20.5" stroke="#15121F" stroke-width="3" stroke-linecap="round"/></svg>`;
 const GEAR = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>`;
@@ -1426,7 +1737,7 @@ function songNode(rec, i){
   return `<div class="node"><span class="num">${i + 1}</span>
     <div class="txt"><div class="t1">${title}</div>
     <div class="t2">${esc(rec.credit)}${rec.year ? ' · ' + esc(rec.year) : ''}${rec.noMb ? ' · Song nicht in MusicBrainz' : ''}</div></div>
-    <a class="play" href="${spotifyUrl(rec)}" target="_blank" rel="noopener" aria-label="${rec.spotifyId ? 'In Spotify öffnen' : 'In Spotify suchen'}">▶ Spotify</a></div>`;
+    <span class="songbtns">${playBtn(rec)}<a class="play" href="${spotifyUrl(rec)}" target="_blank" rel="noopener" aria-label="${rec.spotifyId ? 'In Spotify öffnen' : 'In Spotify suchen'}">Spotify</a></span></div>`;
 }
 function endpointNode(a, label, reached){
   return `<div class="node endpoint ${reached ? 'reached' : ''}"><span class="num">${label === 'Start' ? '●' : '◎'}</span>
@@ -1814,12 +2125,14 @@ function openLinkList(g, opts = {}){
   sheet(`<h2>Linkliste</h2>
     <p class="muted small">Jeder Link öffnet den Song in Spotify. Teilen schickt die ganze Liste, z. B. in eure WhatsApp-Gruppe.</p>
     <div class="list">${g.steps.map((st, i) => `<a class="item" href="${spotifyUrl(st.rec)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">
-      <span class="num">${i + 1}</span><div class="txt"><div class="t1">${esc(st.rec.title)}</div><div class="t2">${esc(st.rec.credit)}</div></div><span class="tag">▶ Spotify</span></a>`).join('')}</div>
+      <span class="num">${i + 1}</span><div class="txt"><div class="t1">${esc(st.rec.title)}</div><div class="t2">${esc(st.rec.credit)}</div></div><span class="tag">Spotify</span></a>`).join('')}</div>
+    <button class="btn block" id="llPlay">▶ Kette anhören</button>
     <label class="check small"><input type="checkbox" id="llCode" ${opts.code ? 'checked' : ''} ${opts.code ? '' : 'disabled'}> Prüf-Link anhängen</label>
     <div class="row"><button class="btn ghost" id="llCopy">Kopieren</button><button class="btn primary" id="llShare">Teilen</button></div>
     <button class="btn ghost" data-close>Schließen</button>`);
   const current = () => linkListText(g, { ...opts, code: $('#llCode').checked ? opts.code : null });
   $('#llCopy').onclick = () => copyText(current());
+  $('#llPlay').onclick = () => { closeSheet(); playChain(g); };
   $('#llShare').onclick = () => shareText(current());
 }
 
@@ -1955,6 +2268,7 @@ function resultView(){
     <button class="btn ${game.kind === 'daily' || pk ? '' : 'primary'} block" id="btnShare">Ergebnis mit Prüf-Link teilen</button>
     ${!game.solved && !game.timeUp && !game.free ? '<button class="btn block" id="btnDuel">Zum Duell herausfordern</button>' : ''}
     <button class="btn block" id="btnChallenge">Als Challenge verschicken</button>
+    <button class="btn block" id="btnPlayChain">▶ Kette anhören</button>
     <button class="btn block" id="btnLinks">Linkliste erstellen</button>
     <div class="row"><button class="btn ghost" id="btnUndo2">Letzten Song zurück</button><button class="btn ghost" id="btnNew">Zur Übersicht</button></div>
   </div>`;
@@ -1964,6 +2278,7 @@ function bindResult(){
   if($('#altList')) fillAlternatives($('#altList'), [game.ch.start], game.ch.target, game.ch.start.name, game.steps.length);
   $('#btnShare').onclick = () => shareText(resultText());
   $('#btnLinks').onclick = () => openLinkList(game, { finished:true, code:chainCode(game) });
+  $('#btnPlayChain').onclick = () => playChain(game);
   $('#btnChallenge').onclick = () => {
     const best = game.best ? Math.min(game.best, game.steps.length) : game.steps.length;
     shareChallenge(game.ch.start, game.ch.target, best);
@@ -2042,12 +2357,14 @@ function verifyView(){
   ${chainHtml(g, false)}
   ${!v.reached ? endpointNode(g.ch.target, 'Ziel nicht erreicht', false) : ''}
   <div class="panel"><span class="eyebrow">Andere Wege zum Ziel</span><div id="altList"></div></div>
+  ${v.g && v.g.steps.length ? '<button class="btn block" id="btnVerifyPlay">▶ Kette anhören</button>' : ''}
   <button class="btn block" id="btnVerifyLinks">Linkliste erstellen</button>
   <button class="btn ghost block" id="btnPlaySame">Diese Challenge selbst spielen</button>`;
 }
 function bindVerify(){
   $('#btnHome').onclick = () => { view = 'home'; verify = null; render(); };
   if($('#altList') && verify.g) fillAlternatives($('#altList'), [verify.g.ch.start], verify.g.ch.target, verify.g.ch.start.name, verify.reached && !verify.problems ? verify.g.steps.length : 0);
+  if($('#btnVerifyPlay')) $('#btnVerifyPlay').onclick = () => playChain(verify.g);
   if($('#btnVerifyLinks')) $('#btnVerifyLinks').onclick = () => openLinkList(verify.g, { finished:!!verify.reached, code:verify.code });
   if($('#btnPlaySame')) $('#btnPlaySame').onclick = () => { const g = verify.g; verify = null; newGame(artistPick(g.ch.start), artistPick(g.ch.target), g.steps.length || null); };
 }
@@ -2220,6 +2537,13 @@ function openSettings(){
     <label class="toggle"><span>Unbelegte Glieder erlauben<small>Die Gruppe darf fehlende Einträge bestätigen. Sie werden markiert.</small></span><input type="checkbox" id="sClaim" ${s.claims ? 'checked' : ''}></label>
     <label class="toggle"><span>Tipps anzeigen<small>Blendet verbundene Bands als zusätzliche Suchfilter ein.</small></span><input type="checkbox" id="sHint" ${s.hints ? 'checked' : ''}></label>
     <label>Maximale Anzahl Songs (0 = unbegrenzt)<input type="text" inputmode="numeric" id="sMax" value="${s.maxSongs}"></label>
+    <span class="eyebrow">Abspielen</span>
+    <p class="muted small">Songs laufen direkt in der App. Ganze Songs gibt es mit Apple-Music-Abo und Anmeldung, sonst 30-Sekunden-Hörproben. Spotify bleibt als Link zum Öffnen in der Spotify-App.</p>
+    <label class="toggle"><span>Hörproben ohne Anmeldung<small>30 Sekunden pro Song über Apple Music.</small></span><input type="checkbox" id="sPrev" ${s.amPreview === false ? '' : 'checked'}></label>
+    <label>Apple-Music-Land (zwei Buchstaben)<input type="text" id="sStore" maxlength="2" autocapitalize="off" value="${esc(s.amStore || 'de')}"></label>
+    <label>Apple-Music-Entwicklertoken<textarea id="sTok" rows="2" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="eyJ…">${esc(s.amToken || '')}</textarea></label>
+    <p class="small" id="amInfo"></p>
+    <div class="row"><button class="btn ghost" id="amIn">Mit Apple Music anmelden</button><button class="btn ghost" id="amOut">Abmelden</button></div>
     <div class="row"><button class="btn ghost" data-close>Abbrechen</button><button class="btn primary" id="sSave">Speichern</button></div>
     <p class="muted small">Daten: MusicBrainz, die offene Musikdatenbank. Fehlt eine Verbindung, kann sie dort jeder nachtragen.</p>
     <span class="eyebrow">Musiknetz</span>
@@ -2230,10 +2554,29 @@ function openSettings(){
     const base = g.baseN ? `MusicBrainz-Export vom ${esc((g.dump || '').slice(6, 8) + '.' + (g.dump || '').slice(4, 6) + '.' + (g.dump || '').slice(0, 4))}: ${g.baseN.toLocaleString('de-DE')} Künstler, ${(g.mCount + g.sCount).toLocaleString('de-DE')} belegte Verbindungen.` : 'Noch kein Musiknetz aus MusicBrainz vorhanden, die App sucht live.';
     el.textContent = `${base} Auf diesem Gerät aus Live-Suchen ergänzt: ${overlay.edges.length.toLocaleString('de-DE')} Verbindungen.`;
   });
+  const amShow = async () => {
+    const el = $('#amInfo'); if(!el) return;
+    const tok = $('#sTok').value.trim() || (await amToken()), info = amTokenInfo(tok);
+    if(!tok){ el.textContent = 'Kein Token eingetragen: nur Hörproben.'; return; }
+    if(!info){ el.textContent = 'Token nicht lesbar.'; return; }
+    const exp = info.exp ? info.exp.toLocaleDateString('de-DE') : 'unbekannt';
+    el.textContent = (info.exp && info.exp < new Date() ? 'Token abgelaufen am ' + exp + '.' : 'Token gültig bis ' + exp + '.') + (amFull() ? ' Angemeldet: ganze Songs.' : ' Nicht angemeldet.');
+  };
+  amShow(); $('#sTok').oninput = amShow;
+  $('#amIn').onclick = async () => {
+    const tok = $('#sTok').value.trim();
+    if(tok && tok !== (settings().amToken || '')){ if(!amTokenInfo(tok)){ toast('Der Apple-Music-Token sieht nicht richtig aus'); return; } LS.set('settings', { ...LS.get('settings', {}), amToken:tok }); mk = null; mkLoading = null; }
+    try{ if(await amSignIn()){ toast('Mit Apple Music verbunden'); amShow(); if(pl.queue.length) playList(pl.queue, pl.idx); } }catch(e){ toast(e.message || 'Anmeldung abgebrochen'); }
+  };
+  $('#amOut').onclick = async () => { await amSignOut(); toast('Von Apple Music abgemeldet'); amShow(); if(pl.queue.length){ pl.mode = 'preview'; plGo(pl.idx); } };
   $('#netClear').onclick = () => { overlay = { nodes:{}, edges:[] }; overlaySeen.clear(); LS.del('overlay'); graph = null; graphLoading = null; toast('Ergänzungen gelöscht'); closeSheet(); };
   $('#sSave').onclick = () => {
-    LS.set('settings', { name:$('#sName').value.trim().slice(0, 20), maxSongs:Math.max(0, parseInt($('#sMax').value, 10) || 0), bandLinks:$('#sBand').checked,
-      colleagues:$('#sCol').checked, claims:$('#sClaim').checked, hints:$('#sHint').checked });
+    const tok = $('#sTok').value.trim();
+    if(tok && !amTokenInfo(tok)){ toast('Der Apple-Music-Token sieht nicht richtig aus'); return; }
+    const store = /^[a-z]{2}$/i.test($('#sStore').value.trim()) ? $('#sStore').value.trim().toLowerCase() : 'de';
+    if(tok !== (s.amToken || '') || store !== (s.amStore || 'de')){ mk = null; mkLoading = null; LS.del('amMatch'); }
+    LS.set('settings', { ...LS.get('settings', {}), name:$('#sName').value.trim().slice(0, 20), maxSongs:Math.max(0, parseInt($('#sMax').value, 10) || 0), bandLinks:$('#sBand').checked,
+      colleagues:$('#sCol').checked, claims:$('#sClaim').checked, hints:$('#sHint').checked, amPreview:$('#sPrev').checked, amToken:tok, amStore:store });
     closeSheet(); toast('Gespeichert'); render();
   };
 }
